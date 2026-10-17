@@ -1,161 +1,180 @@
-import os
+"""
+NeuroSense FastAPI backend.
+ 
+Run:  uvicorn main:app --reload --port 8000
+ 
+Files expected in Backend/models/:
+  neurosense_1d_best.*     EEG 1D-CNN (Keras), sigmoid output = P(anomaly)
+  neurosense_mri.tflite    MRI classifier (TFLite)
+  eeg_scaler.pkl           OPTIONAL: scaler fitted on the EEG training data
+ 
+Settings (env vars, all optional):
+  MRI_CLASSES      comma list in the SAME order as training, default: glioma,meningioma,notumor,pituitary
+  MRI_PREPROCESS   mobilenet (x/127.5-1) | rescale (x/255) | none   default: mobilenet
+  CORS_ORIGINS     comma list, default: http://localhost:8501,http://localhost:5173
+"""
+import glob, io, os
+from contextlib import asynccontextmanager
+from typing import Optional
+ 
 import numpy as np
-import pandas as pd
-import tensorflow as tf
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
-io = __import__('io')
-
-# Initialize FastAPI app
-app = FastAPI(
-    title="NeuroSense API",
-    description="Multimodal Neurological Risk & Brain Tumor Classification Backend",
-    version="1.0.0"
-)
-
-# Enable CORS for frontend integration (React / Streamlit / Vue)
+from PIL import Image, UnidentifiedImageError
+ 
+BASE = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.getenv("MODEL_DIR", os.path.join(BASE, "models"))
+EEG_LEN = 178
+MAX_MRI_BYTES = 10 * 1024 * 1024
+MRI_CLASSES = [c.strip() for c in os.getenv("MRI_CLASSES", "glioma,meningioma,notumor,pituitary").split(",")]
+MRI_PREPROCESS = os.getenv("MRI_PREPROCESS", "mobilenet")
+state = {}
+ 
+ 
+def load_tflite(path):
+    try:
+        from tflite_runtime.interpreter import Interpreter   # lightweight, if installed
+    except ImportError:
+        from tensorflow.lite.python.interpreter import Interpreter
+    interp = Interpreter(model_path=path)
+    interp.allocate_tensors()
+    return interp
+ 
+ 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    eeg_paths = sorted(glob.glob(os.path.join(MODEL_DIR, "neurosense_1d_best.*")))
+    if eeg_paths:
+        import tensorflow as tf
+        state["eeg"] = tf.keras.models.load_model(eeg_paths[0])
+    else:
+        state["eeg"] = None
+ 
+    scaler_path = os.path.join(MODEL_DIR, "eeg_scaler.pkl")
+    if os.path.exists(scaler_path):
+        import joblib
+        state["scaler"] = joblib.load(scaler_path)
+    else:
+        state["scaler"] = None
+ 
+    mri_path = os.path.join(MODEL_DIR, "neurosense_mri.tflite")
+    state["mri"] = load_tflite(mri_path) if os.path.exists(mri_path) else None
+    yield
+    state.clear()
+ 
+ 
+app = FastAPI(title="NeuroSense API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:8501,http://localhost:5173").split(","),
+    allow_methods=["*"], allow_headers=["*"],
 )
-
-# Load Models
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EEG_MODEL_PATH = os.path.join(BASE_DIR, "models", "neurosense_1d_best.keras")
-MRI_MODEL_PATH = os.path.join(BASE_DIR, "models", "neurosense_mri_best.keras")
-
-eeg_model = None
-mri_model = None
-
-try:
-    if os.path.exists(EEG_MODEL_PATH):
-        eeg_model = tf.keras.models.load_model(EEG_MODEL_PATH)
-        print("EEG 1D-CNN Model Loaded Successfully.")
-    if os.path.exists(MRI_MODEL_PATH):
-        mri_model = tf.keras.models.load_model(MRI_MODEL_PATH)
-        print("MRI 2D-CNN Model Loaded Successfully.")
-except Exception as e:
-    print(f"Warning: Model loading failed: {e}")
-
-# Class Labels for MRI
-MRI_CLASSES = ["Glioma", "Meningioma", "No Tumor", "Pituitary"]
-
-
-@app.get("/")
-def home():
+ 
+ 
+# ---------- preprocessing ----------
+def parse_eeg(raw: bytes) -> np.ndarray:
+    try:
+        text = raw.decode("utf-8", errors="ignore")
+        vals = [float(v) for v in text.replace(",", " ").replace(";", " ").split()]
+    except ValueError:
+        raise HTTPException(400, "EEG file must contain only numbers (CSV or TXT).")
+    if len(vals) != EEG_LEN:
+        raise HTTPException(400, f"EEG file has {len(vals)} values; expected {EEG_LEN}.")
+    x = np.array(vals, dtype="float32").reshape(1, EEG_LEN)
+    if state.get("scaler") is not None:
+        x = state["scaler"].transform(x).astype("float32")
+    # match whatever input shape the saved model wants: (178,) or (178, 1)
+    shape = state["eeg"].input_shape if state.get("eeg") is not None else (None, EEG_LEN, 1)
+    return x.reshape(1, EEG_LEN, 1) if len(shape) == 3 else x
+ 
+ 
+def parse_mri(raw: bytes) -> np.ndarray:
+    if len(raw) > MAX_MRI_BYTES:
+        raise HTTPException(400, "MRI image is larger than 10 MB.")
+    if state.get("mri") is None:
+        raise HTTPException(503, "MRI model is not loaded on the server.")
+    inp = state["mri"].get_input_details()[0]
+    h, w = int(inp["shape"][1]), int(inp["shape"][2])
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGB").resize((w, h))
+    except (UnidentifiedImageError, OSError):
+        raise HTTPException(400, "MRI file is not a valid image (use JPG or PNG).")
+    x = np.asarray(img, dtype="float32")
+    if MRI_PREPROCESS == "mobilenet":
+        x = x / 127.5 - 1.0
+    elif MRI_PREPROCESS == "rescale":
+        x = x / 255.0
+    return np.expand_dims(x, 0)
+ 
+ 
+# ---------- inference ----------
+def run_eeg(x: np.ndarray) -> dict:
+    if state.get("eeg") is None:
+        raise HTTPException(503, "EEG model is not loaded on the server.")
+    p = np.asarray(state["eeg"].predict(x, verbose=0)).ravel()
+    return {"probability": float(p[0])}
+ 
+ 
+def run_mri(x: np.ndarray) -> dict:
+    interp = state["mri"]
+    inp = interp.get_input_details()[0]
+    out = interp.get_output_details()[0]
+    if inp["dtype"] != np.float32:                       # quantised model: convert float -> int
+        scale, zero = inp["quantization"]
+        x = np.round(x / scale + zero).astype(inp["dtype"])
+    interp.set_tensor(inp["index"], x.astype(inp["dtype"]))
+    interp.invoke()
+    probs = interp.get_tensor(out["index"])[0].astype("float32")
+    if out["dtype"] != np.float32:
+        scale, zero = out["quantization"]
+        probs = (probs - zero) * scale
+    if abs(float(probs.sum()) - 1.0) > 0.05:             # logits -> softmax if needed
+        e = np.exp(probs - probs.max())
+        probs = e / e.sum()
+    if len(probs) != len(MRI_CLASSES):
+        raise HTTPException(500, f"Model has {len(probs)} outputs but MRI_CLASSES has {len(MRI_CLASSES)}.")
+    by_class = {c: float(p) for c, p in zip(MRI_CLASSES, probs)}
     return {
-        "status": "online",
-        "system": "NeuroSense Clinical Intelligence Engine",
-        "endpoints": ["/predict/eeg", "/predict/mri", "/predict/multimodal"]
+        "label": MRI_CLASSES[int(np.argmax(probs))],
+        "tumor_probability": 1.0 - by_class.get("notumor", 0.0),
+        "probs": by_class,
     }
-
-
-@app.post("/predict/eeg")
-async def predict_eeg(file: UploadFile = File(...)):
-    """
-    Accepts a CSV file containing 178 EEG voltage time-step values 
-    and returns functional anomaly risk.
-    """
-    if not eeg_model:
-        raise HTTPException(status_code=500, detail="EEG model is not loaded on the server.")
-    
-    try:
-        # Read uploaded CSV
-        contents = await file.read()
-        df = pd.read_csv(io.BytesIO(contents))
-        
-        # Take the first row of features (columns 1 to 178 or matching shape)
-        # Assuming the CSV matches the 178 feature points
-        features = df.iloc[0, 1:179].values.astype(float)
-        
-        # Reshape & scale
-        data = features.reshape(1, -1)
-        # Simple normalization standard check
-        scaled_data = (data - np.mean(data)) / (np.std(data) + 1e-8)
-        final_input = np.expand_dims(scaled_data, axis=2)
-        
-        # Inference
-        prob = float(eeg_model.predict(final_input)[0][0])
-        risk = "High Risk / Tumor Region Anomaly Detected" if prob > 0.5 else "Normal / Healthy Baseline"
-        confidence = round(float(prob if prob > 0.5 else 1 - prob) * 100, 2)
-        
-        return {
-            "modality": "EEG",
-            "prediction_score": prob,
-            "classification": risk,
-            "confidence_percentage": confidence
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error processing EEG file: {str(e)}")
-
-
-@app.post("/predict/mri")
-async def predict_mri(file: UploadFile = File(...)):
-    """
-    Accepts a brain scan image file (MRI) and returns structural tumor classification.
-    """
-    if not mri_model:
-        raise HTTPException(status_code=500, detail="MRI model is not loaded on the server.")
-    
-    try:
-        # Read and preprocess image
-        image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        image = image.resize((224, 224))
-        
-        img_array = np.array(image) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
-        
-        # Inference
-        preds = mri_model.predict(img_array)[0]
-        predicted_idx = int(np.argmax(preds))
-        confidence = round(float(preds[predicted_idx]) * 100, 2)
-        tumor_type = MRI_CLASSES[predicted_idx]
-        
-        return {
-            "modality": "MRI",
-            "predicted_class": tumor_type,
-            "confidence_percentage": confidence,
-            "all_probabilities": {MRI_CLASSES[i]: float(preds[i]) for i in range(len(MRI_CLASSES))}
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error processing MRI image: {str(e)}")
-
-
-@app.post("/predict/multimodal")
-async def predict_multimodal(eeg_file: UploadFile = File(None), mri_file: UploadFile = File(None)):
-    """
-    Flexible router: Accepts EEG, MRI, or both. Executes late fusion if both are present.
-    """
-    if not eeg_file and not mri_file:
-        raise HTTPException(status_code=400, detail="Please provide at least one file (EEG CSV or MRI Image).")
-    
-    response = {"modality": "Multimodal Fusion"}
-    
-    eeg_prob = None
-    mri_result = None
-    
-    if eeg_file:
-        eeg_res = await predict_eeg(eeg_file)
-        response["eeg_analysis"] = eeg_res
-        eeg_prob = eeg_res["prediction_score"]
-        
-    if mri_file:
-        mri_res = await predict_mri(mri_file)
-        response["mri_analysis"] = mri_res
-        # Derive structural risk factor (e.g., 1 if tumor detected, 0 if No Tumor)
-        mri_risk_score = 0.0 if mri_res["predicted_class"] == "No Tumor" else 1.0
-        mri_result = mri_risk_score
-
-    # Late Fusion Calculation if both are provided
-    if eeg_prob is not None and mri_result is not None:
-        alpha = 0.5  # Weight balance between functional (EEG) and structural (MRI)
-        final_fusion_score = float((alpha * eeg_prob) + ((1 - alpha) * mri_result))
-        response["unified_fusion_score"] = final_fusion_score
-        response["unified_assessment"] = "High Clinical Risk / Anomaly Confirmed" if final_fusion_score > 0.5 else "Low Risk / Normal Findings"
-    
-    return response
+ 
+ 
+# ---------- routes ----------
+@app.get("/")
+def root():
+    return {"service": "NeuroSense API", "docs": "/docs"}
+ 
+ 
+@app.get("/health")
+def health():
+    return {"status": "ok", "eeg_loaded": state.get("eeg") is not None,
+            "mri_loaded": state.get("mri") is not None, "eeg_scaler": state.get("scaler") is not None}
+ 
+ 
+@app.post("/predict")
+async def predict(
+    eeg: Optional[UploadFile] = File(None),
+    mri: Optional[UploadFile] = File(None),
+    alpha: float = Form(0.5),
+):
+    if eeg is None and mri is None:
+        raise HTTPException(400, "Upload an EEG file, an MRI image, or both.")
+    if not 0.0 <= alpha <= 1.0:
+        raise HTTPException(400, "alpha must be between 0 and 1.")
+ 
+    out = {}
+    if eeg is not None:
+        out["eeg"] = run_eeg(parse_eeg(await eeg.read()))
+    if mri is not None:
+        out["mri"] = run_mri(parse_mri(await mri.read()))
+ 
+    if "eeg" in out and "mri" in out:
+        out["mode"], out["alpha"] = "fused", alpha
+        out["final_risk"] = alpha * out["eeg"]["probability"] + (1 - alpha) * out["mri"]["tumor_probability"]
+    elif "eeg" in out:
+        out["mode"], out["final_risk"] = "eeg", out["eeg"]["probability"]
+    else:
+        out["mode"], out["final_risk"] = "mri", out["mri"]["tumor_probability"]
+    return out
