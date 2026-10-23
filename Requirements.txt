@@ -1,6 +1,10 @@
-fastapi
-uvicorn
-python-multipart
-numpy
-tensorflow
-plotly
+fastapi==0.110.0
+uvicorn==0.28.0
+tensorflow-cpu==2.16.1
+numpy==1.24.3
+pandas==2.0.3
+pillow==10.2.0
+python-multipart==0.0.9
+plotly==6.3.0
+streamlit
+scikit-learn
