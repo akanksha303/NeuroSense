@@ -1,9 +1,10 @@
-
 """
 NeuroSense — AI Neurological Screening Dashboard
 Run: streamlit run Frontend/streamlit_app.py
 """
 
+import html
+import math
 import os
 
 import pandas as pd
@@ -14,221 +15,236 @@ EEG_LEN = 178
 DEFAULT_API = os.getenv("NEUROSENSE_API", "http://localhost:8000")
 
 st.set_page_config(
-    page_title="NeuroSense | AI Brain Analytics",
-    page_icon="🧠",
+    page_title="NeuroSense | Brain Health Screening",
+    page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ---------- colorful UI theme ----------
+# ---------- theme ----------
+# All colours live in CSS variables on :root. Change a value here and the
+# whole app re-themes, so you never hunt through the file for a hex code.
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;600;700&family=Figtree:wght@400;500;600;700&display=swap');
+
+    :root {
+        --sun: #FFC93C;          /* primary yellow */
+        --sun-deep: #E8A500;     /* hover / strong accent */
+        --sun-soft: #FFF4CC;     /* tinted backgrounds */
+        --sun-wash: #FFFBEB;     /* page background */
+        --ink: #2B2208;          /* main text */
+        --ink-soft: #6F6342;     /* secondary text */
+        --line: #F1E3B0;         /* borders */
+        --ok: #2E9B6A;           /* low risk */
+        --warn: #D9810B;         /* moderate risk */
+        --alert: #D2453D;        /* high risk */
+        --radius: 14px;
+    }
 
     .stApp {
-        background:
-            radial-gradient(ellipse at 0% 0%, rgba(91, 72, 220, .14), transparent 36%),
-            radial-gradient(ellipse at 100% 10%, rgba(0, 190, 210, .12), transparent 32%),
-            #F5F7FF;
-        font-family: 'DM Sans', sans-serif;
+        background: var(--sun-wash);
+        font-family: 'Figtree', sans-serif;
+        color: var(--ink);
     }
 
-    h1, h2, h3 {
-        font-family: 'Space Grotesk', sans-serif !important;
-        color: #18234A;
+    h1, h2, h3, h4 {
+        font-family: 'Bricolage Grotesque', sans-serif !important;
+        color: var(--ink);
+        letter-spacing: -0.01em;
     }
 
+    /* sidebar: light and warm, dark text (no forced white-on-white bugs) */
     [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #151A3D 0%, #25265A 55%, #343477 100%);
+        background: var(--sun-soft);
+        border-right: 1px solid var(--line);
     }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 { color: var(--ink); }
 
-    [data-testid="stSidebar"] * {
-        color: #F2F4FF !important;
-    }
-
-    [data-testid="stSidebar"] input {
-        color: #18234A !important;
-        background: #FFFFFF !important;
-    }
-
-    [data-testid="stSidebar"] [data-baseweb="slider"] div {
-        border-color: #9A8CFF;
-    }
-
+    /* hero: the one bold element on the page */
     .hero {
-        background: linear-gradient(120deg, #171B45 0%, #34317B 52%, #087EAD 100%);
-        border-radius: 25px;
-        padding: 32px 34px;
-        color: white;
-        margin: 4px 0 24px 0;
-        box-shadow: 0 14px 35px rgba(45, 47, 113, .19);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .hero:after {
-        content: "🧠";
-        position: absolute;
-        right: 25px;
-        top: 10px;
-        font-size: 92px;
-        opacity: .95;
-        filter: drop-shadow(0 0 18px rgba(104, 224, 255, .3));
-    }
-
-    .hero-tag {
-        display: inline-block;
-        background: rgba(117, 255, 220, .15);
-        color: #8DFFE4;
-        padding: 6px 12px;
-        border: 1px solid rgba(141, 255, 228, .35);
-        border-radius: 30px;
-        font-size: 12px;
-        letter-spacing: 1px;
-        font-weight: 700;
-    }
-
-    .hero-title {
-        font-family: 'Space Grotesk', sans-serif;
-        font-size: 39px;
-        font-weight: 700;
-        color: #FFFFFF;
-        margin: 14px 0 6px 0;
-        line-height: 1.15;
-    }
-
-    .hero-subtitle {
-        color: #E0E7FF;
-        font-size: 15px;
-        max-width: 600px;
-        line-height: 1.7;
-    }
-
-    .section-card {
-        background: rgba(255,255,255,.92);
-        border: 1px solid #E5E9FA;
-        border-radius: 19px;
-        padding: 21px;
-        box-shadow: 0 7px 23px rgba(41, 54, 105, .055);
-        margin-bottom: 12px;
-    }
-
-    .section-label {
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 1.4px;
-        color: #737B9D;
-        text-transform: uppercase;
-    }
-
-    .section-title {
-        font-family: 'Space Grotesk', sans-serif;
-        color: #222950;
-        font-size: 21px;
-        font-weight: 700;
-        margin: 5px 0 8px 0;
-    }
-
-    .pill {
-        display: inline-block;
+        background: var(--sun);
         border-radius: 20px;
-        padding: 5px 11px;
-        font-size: 12px;
+        padding: 30px 34px;
+        margin: 0 0 18px 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+    }
+    .hero-title {
+        font-family: 'Bricolage Grotesque', sans-serif;
+        font-size: 40px;
         font-weight: 700;
-        margin: 5px 0 10px 0;
+        color: var(--ink);
+        line-height: 1.1;
+        margin: 0 0 8px 0;
     }
-
-    .purple-pill { background: #EEE9FF; color: #6941C6; }
-    .cyan-pill { background: #DDF8FC; color: #087D96; }
-    .green-pill { background: #DDF8EA; color: #147D52; }
-
-    .metric-card {
-        border-radius: 18px;
-        padding: 20px;
-        background: white;
-        border: 1px solid #E8EAF7;
-        box-shadow: 0 8px 22px rgba(41, 54, 105, .06);
-        min-height: 120px;
+    .hero-subtitle {
+        color: #4A3C0E;
+        font-size: 16px;
+        line-height: 1.6;
+        max-width: 560px;
+        margin: 0;
     }
-
-    .metric-label {
-        color: #707895;
-        font-size: 13px;
-        font-weight: 600;
-    }
-
-    .metric-value {
-        color: #24265B;
-        font-family: 'Space Grotesk', sans-serif;
-        font-size: 27px;
-        font-weight: 700;
-        margin-top: 7px;
-    }
-
-    .risk-panel {
-        background: linear-gradient(145deg, #FFFFFF, #F0EDFF);
-        border: 1px solid #DED8FF;
-        border-radius: 22px;
-        padding: 25px;
-        text-align: center;
-        box-shadow: 0 10px 26px rgba(77, 55, 160, .08);
-    }
-
-    .risk-number {
-        font-family: 'Space Grotesk', sans-serif;
-        font-size: 46px;
-        font-weight: 700;
-        margin: 8px 0;
+    .hero-icon {
+        font-size: 64px;
+        line-height: 1;
+        background: rgba(255,255,255,.55);
+        border-radius: 50%;
+        width: 104px;
+        height: 104px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
     }
 
     .notice {
-        background: #FFF6E7;
-        border: 1px solid #F6D8A6;
-        border-radius: 12px;
+        background: #FFFFFF;
+        border: 1px solid var(--line);
+        border-left: 5px solid var(--sun-deep);
+        border-radius: 10px;
         padding: 12px 16px;
-        color: #80551B;
-        font-size: 13px;
-        margin: 12px 0 22px 0;
+        color: var(--ink-soft);
+        font-size: 14px;
+        margin: 0 0 22px 0;
+    }
+    .notice b { color: var(--ink); }
+
+    /* status tiles */
+    .status {
+        background: #FFFFFF;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px 18px;
+        min-height: 96px;
+    }
+    .status-label { color: var(--ink-soft); font-size: 14px; font-weight: 600; }
+    .status-value {
+        font-family: 'Bricolage Grotesque', sans-serif;
+        font-size: 24px;
+        font-weight: 700;
+        margin-top: 4px;
     }
 
+    /* card headings inside bordered containers */
+    .card-title {
+        font-family: 'Bricolage Grotesque', sans-serif;
+        font-size: 21px;
+        font-weight: 700;
+        color: var(--ink);
+        margin: 0;
+    }
+    .card-hint { color: var(--ink-soft); font-size: 14px; margin: 2px 0 10px 0; }
+
+    /* risk result */
+    .risk-panel {
+        background: #FFFFFF;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 26px;
+        text-align: center;
+    }
+    .risk-caption { color: var(--ink-soft); font-size: 15px; font-weight: 600; }
+    .risk-number {
+        font-family: 'Bricolage Grotesque', sans-serif;
+        font-size: 56px;
+        font-weight: 700;
+        line-height: 1.1;
+        margin: 6px 0 10px 0;
+    }
+    .risk-badge {
+        display: inline-block;
+        padding: 6px 16px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 15px;
+    }
+    .gauge {
+        position: relative;
+        height: 12px;
+        border-radius: 999px;
+        margin: 24px 6px 6px 6px;
+        background: linear-gradient(
+            90deg,
+            var(--ok) 0%, var(--ok) 38%,
+            var(--sun) 42%, var(--warn) 66%,
+            var(--alert) 72%, var(--alert) 100%
+        );
+    }
+    .gauge-marker {
+        position: absolute;
+        top: -6px;
+        width: 6px;
+        height: 24px;
+        background: var(--ink);
+        border: 2px solid #FFFFFF;
+        border-radius: 4px;
+        transform: translateX(-50%);
+    }
+    .gauge-scale {
+        display: flex;
+        justify-content: space-between;
+        color: var(--ink-soft);
+        font-size: 12px;
+        margin: 0 6px;
+    }
+
+    .guidance {
+        background: var(--sun-soft);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 16px 18px;
+        color: var(--ink);
+        font-size: 15px;
+        line-height: 1.6;
+        margin-top: 14px;
+    }
+    .guidance b { display: block; margin-bottom: 4px; }
+    .guidance small { color: var(--ink-soft); }
+
+    /* buttons and widgets */
     .stButton > button[kind="primary"] {
-        background: linear-gradient(100deg, #6654DB, #178FBB);
+        background: var(--sun);
+        color: var(--ink);
         border: none;
         border-radius: 12px;
-        color: white;
         font-weight: 700;
-        padding: 12px 22px;
-        min-height: 48px;
-        box-shadow: 0 7px 17px rgba(81, 79, 198, .2);
+        min-height: 50px;
+        font-size: 16px;
     }
+    .stButton > button[kind="primary"]:hover:not(:disabled) {
+        background: var(--sun-deep);
+        color: var(--ink);
+    }
+    .stButton > button[kind="primary"]:disabled {
+        background: #EDE6CB;
+        color: #A89E7C;
+    }
+    .stButton > button { border-radius: 10px; }
 
-    .stButton > button {
-        border-radius: 10px;
+    div[data-testid="stFileUploader"] section {
+        background: var(--sun-wash);
+        border: 1.5px dashed var(--sun-deep);
+        border-radius: 12px;
     }
-
-    div[data-testid="stFileUploader"] {
-        background: #F8F9FF;
-        border: 1px dashed #B7B8E9;
-        border-radius: 13px;
-        padding: 7px;
-    }
-
-    div[data-testid="stProgressBar"] > div > div {
-        background: linear-gradient(90deg, #7964E8, #17B7C7);
-    }
+    div[data-testid="stProgressBar"] > div > div { background: var(--sun-deep); }
 
     .footer {
-        color: #858BA6;
+        color: var(--ink-soft);
         text-align: center;
-        font-size: 12px;
-        padding: 22px 0 8px 0;
+        font-size: 13px;
+        padding: 26px 0 6px 0;
     }
 
     @media (max-width: 700px) {
-        .hero { padding: 24px 20px; }
-        .hero-title { font-size: 29px; }
-        .hero:after { font-size: 55px; right: 12px; top: 8px; }
+        .hero { padding: 22px 20px; }
+        .hero-title { font-size: 30px; }
+        .hero-icon { display: none; }
     }
     </style>
     """,
@@ -238,31 +254,69 @@ st.markdown(
 
 # ---------- helpers ----------
 def parse_eeg(raw: bytes):
+    """Return a list of floats, or None if the file is not purely numeric."""
     try:
         text = raw.decode("utf-8", errors="ignore")
-        return [
+        values = [
             float(value)
             for value in text.replace(",", " ").replace(";", " ").split()
         ]
     except ValueError:
         return None
+    if any(not math.isfinite(v) for v in values):  # rejects nan / inf
+        return None
+    return values
 
 
 def risk_level(probability: float):
+    """Return (label, text colour, badge background)."""
     if probability >= 0.70:
-        return "High", "#D04456", "#FCE8EC"
+        return "High", "#D2453D", "#FCE4E2"
     if probability >= 0.40:
-        return "Moderate", "#C18416", "#FFF2D8"
-    return "Low", "#14865C", "#DDF8EA"
+        return "Moderate", "#B86E00", "#FFECC2"
+    return "Low", "#2E9B6A", "#DDF5E8"
 
 
-def metric_card(label, value, emoji):
+GUIDANCE = {
+    "High": (
+        "Consider speaking with a neurologist soon",
+        "The model flagged patterns worth a professional look. Bring this "
+        "result along as supporting context, together with any symptoms "
+        "you have noticed.",
+    ),
+    "Moderate": (
+        "Consider mentioning this to your doctor",
+        "The result is in an uncertain range. If you have symptoms such as "
+        "recurring headaches, memory changes or dizziness, a check-up is a "
+        "good next step.",
+    ),
+    "Low": (
+        "No strong signal in this screening",
+        "A low score does not rule out a condition. If you have symptoms, "
+        "or are worried, speak with a healthcare professional anyway.",
+    ),
+}
+
+
+def status_tile(label: str, value: str, color: str):
     st.markdown(
         f"""
-        <div class="metric-card">
-            <div class="metric-label">{emoji} &nbsp; {label}</div>
-            <div class="metric-value">{value}</div>
+        <div class="status">
+            <div class="status-label">{html.escape(label)}</div>
+            <div class="status-value" style="color:{color}">
+                {html.escape(value)}
+            </div>
         </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def card_header(icon: str, title: str, hint: str):
+    st.markdown(
+        f"""
+        <div class="card-title">{icon} {html.escape(title)}</div>
+        <div class="card-hint">{html.escape(hint)}</div>
         """,
         unsafe_allow_html=True,
     )
@@ -271,24 +325,42 @@ def metric_card(label, value, emoji):
 def show_risk(probability: float):
     level, color, background = risk_level(probability)
     percent = min(max(float(probability) * 100, 0), 100)
+    marker = min(max(percent, 2), 98)  # keep the marker inside the bar
 
     st.markdown(
         f"""
         <div class="risk-panel">
-            <div class="section-label">Combined screening score</div>
-            <div class="risk-number" style="color:{color}">
-                {percent:.1f}%
+            <div class="risk-caption">Combined screening score</div>
+            <div class="risk-number" style="color:{color}">{percent:.1f}%</div>
+            <span class="risk-badge"
+                  style="background:{background}; color:{color}">
+                {level} risk category
+            </span>
+            <div class="gauge">
+                <div class="gauge-marker" style="left:{marker}%"></div>
             </div>
-            <div style="display:inline-block; background:{background};
-                        color:{color}; padding:7px 16px;
-                        border-radius:20px; font-weight:700;">
-                ● {level} risk category
+            <div class="gauge-scale">
+                <span>Low</span><span>Moderate</span><span>High</span>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.progress(percent / 100)
+
+    heading, body = GUIDANCE[level]
+    st.markdown(
+        f"""
+        <div class="guidance">
+            <b>{heading}</b>
+            {body}
+            <br><small>
+                Sudden severe headache, weakness on one side, confusion or a
+                seizure needs emergency care. Do not wait for a screening.
+            </small>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.caption(
         "This score reflects the configured model output and is not a "
         "validated estimate of clinical risk."
@@ -297,28 +369,26 @@ def show_risk(probability: float):
 
 # ---------- sidebar ----------
 with st.sidebar:
-    st.markdown("## 🧠 NeuroSense")
-    st.caption("AI Brain Analytics")
+    st.markdown("## 🩺 NeuroSense")
+    st.caption("Brain health screening")
     st.divider()
 
-    st.markdown("### ⚙️ Configuration")
-    api_url = st.text_input("FastAPI backend URL", DEFAULT_API).rstrip("/")
+    st.markdown("### Settings")
+    api_url = st.text_input("Backend URL", DEFAULT_API).strip().rstrip("/")
 
     alpha = st.slider(
-        "EEG fusion weight (α)",
+        "EEG weight in combined score",
         0.0,
         1.0,
         0.5,
         0.05,
-        help="Used only when both EEG and MRI files are supplied.",
+        help="Used only when both an EEG file and an MRI image are uploaded.",
     )
-
-    st.caption(f"EEG weight: {alpha:.0%}")
-    st.caption(f"MRI weight: {1 - alpha:.0%}")
+    st.caption(f"EEG {alpha:.0%}  ·  MRI {1 - alpha:.0%}")
 
     st.divider()
 
-    if st.button("🔌 Check backend", use_container_width=True):
+    if st.button("Check backend connection", use_container_width=True):
         try:
             response = requests.get(f"{api_url}/health", timeout=5)
             response.raise_for_status()
@@ -329,173 +399,154 @@ with st.sidebar:
         except ValueError:
             st.error("Backend returned invalid JSON.")
 
+    if st.button("Clear results", use_container_width=True):
+        st.session_state.pop("result", None)
+        st.rerun()
+
 
 # ---------- hero ----------
 st.markdown(
     """
     <div class="hero">
-        <div class="hero-tag">✦ INTELLIGENT NEUROLOGY</div>
-        <div class="hero-title">NeuroSense</div>
-        <div class="hero-subtitle">
-            Explore neurological screening signals with an AI-powered
-            dashboard for EEG recordings and MRI images.
+        <div>
+            <div class="hero-title">Brain health screening,<br>made clearer</div>
+            <p class="hero-subtitle">
+                Upload an EEG recording, an MRI image, or both. NeuroSense
+                shows what the models found in plain language.
+            </p>
         </div>
+        <div class="hero-icon">🩺</div>
     </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    """
     <div class="notice">
-        ⚕️ <b>Research prototype:</b> Outputs are experimental and must not
-        be used to diagnose, rule out, or treat a medical condition.
+        <b>Research prototype.</b> Results are experimental and must not be
+        used to diagnose, rule out or treat a medical condition.
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ---------- quick overview ----------
-c1, c2, c3 = st.columns(3)
+# ---------- uploads ----------
+st.markdown("## Upload your data")
+st.caption("Provide one file, or both for a combined analysis.")
 
-with c1:
-    metric_card("EEG analysis", "178 values", "〰️")
-
-with c2:
-    metric_card("MRI input", "Brain image", "🧠")
-
-with c3:
-    metric_card("Inference", "FastAPI", "⚡")
-
-st.write("")
-st.markdown("## 🔬 Start an analysis")
-st.caption("Upload one modality or provide both for a combined analysis.")
-
-# ---------- upload cards ----------
-col_eeg, col_mri = st.columns(2)
+col_eeg, col_mri = st.columns(2, gap="large")
 
 eeg_bytes = None
 mri_bytes = None
+eeg_file = None
+mri_file = None
 eeg_ok = True
+eeg_state = ("Waiting for file", "#8A7F5C")
+mri_state = ("Waiting for file", "#8A7F5C")
 
 with col_eeg:
-    st.markdown(
-        """
-        <div class="section-card">
-            <div class="pill purple-pill">01 · SIGNAL PROCESSING</div>
-            <div class="section-title">〰️ EEG Recording</div>
-            <div style="color:#707895;font-size:14px;">
-                Upload a CSV or TXT file containing exactly 178 numeric values.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True):
+        card_header(
+            "〰️",
+            "EEG recording",
+            f"A CSV or TXT file with exactly {EEG_LEN} numeric values.",
+        )
+        eeg_file = st.file_uploader(
+            "Choose EEG file",
+            type=["csv", "txt"],
+            key="eeg",
+            label_visibility="collapsed",
+        )
 
-    eeg_file = st.file_uploader(
-        "Choose EEG file",
-        type=["csv", "txt"],
-        key="eeg",
-    )
+        if eeg_file is not None:
+            eeg_bytes = eeg_file.getvalue()
+            values = parse_eeg(eeg_bytes)
 
-    if eeg_file is not None:
-        eeg_bytes = eeg_file.getvalue()
-        values = parse_eeg(eeg_bytes)
-
-        if values is None or len(values) != EEG_LEN:
-            count = 0 if values is None else len(values)
-            st.error(f"Expected 178 numeric values; found {count}.")
-            eeg_ok = False
-        else:
-            st.success(f"✓ {len(values)} numeric values loaded")
-            st.markdown("**EEG signal preview**")
-            st.line_chart(
-                pd.DataFrame({"Signal amplitude": values}),
-                height=200,
-            )
+            if values is None:
+                st.error(
+                    "This file contains text or invalid numbers. "
+                    "Use only numeric values separated by commas or spaces."
+                )
+                eeg_ok = False
+                eeg_state = ("Invalid file", "#D2453D")
+            elif len(values) != EEG_LEN:
+                st.error(
+                    f"Expected {EEG_LEN} values but found {len(values)}."
+                )
+                eeg_ok = False
+                eeg_state = ("Wrong length", "#D2453D")
+            else:
+                st.success(f"{len(values)} values loaded")
+                st.caption("Signal preview")
+                st.line_chart(
+                    pd.DataFrame({"Signal amplitude": values}),
+                    height=200,
+                    color="#E8A500",
+                )
+                eeg_state = ("Ready", "#2E9B6A")
 
 with col_mri:
-    st.markdown(
-        """
-        <div class="section-card">
-            <div class="pill cyan-pill">02 · IMAGE ANALYSIS</div>
-            <div class="section-title">🧠 MRI Scan</div>
-            <div style="color:#707895;font-size:14px;">
-                Upload a supported JPG or PNG brain image for model inference.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    mri_file = st.file_uploader(
-        "Choose MRI image",
-        type=["jpg", "jpeg", "png"],
-        key="mri",
-    )
-
-    if mri_file is not None:
-        mri_bytes = mri_file.getvalue()
-        st.image(
-            mri_bytes,
-            caption="Uploaded image",
-            use_container_width=True,
+    with st.container(border=True):
+        card_header(
+            "🧠",
+            "MRI scan",
+            "A JPG or PNG image of a brain scan.",
         )
+        mri_file = st.file_uploader(
+            "Choose MRI image",
+            type=["jpg", "jpeg", "png"],
+            key="mri",
+            label_visibility="collapsed",
+        )
+
+        if mri_file is not None:
+            mri_bytes = mri_file.getvalue()
+            st.image(
+                mri_bytes,
+                caption="Uploaded image",
+                use_container_width=True,
+            )
+            mri_state = ("Ready", "#2E9B6A")
 
 # ---------- selected mode ----------
 if eeg_bytes is not None and mri_bytes is not None:
-    mode = "EEG + MRI fusion"
-    mode_color = "#6A4CDA"
+    mode = "EEG + MRI combined"
 elif eeg_bytes is not None:
     mode = "EEG only"
-    mode_color = "#8B55CC"
 elif mri_bytes is not None:
     mode = "MRI only"
-    mode_color = "#078BA8"
 else:
     mode = None
-    mode_color = "#747B98"
 
-st.markdown(
-    f"""
-    <div class="section-card">
-        <div class="section-label">Selected analysis mode</div>
-        <div style="font-size:19px;font-weight:700;color:{mode_color};
-                    margin-top:7px;">
-            {mode or "Waiting for an upload"}
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+st.write("")
+t1, t2, t3 = st.columns(3, gap="medium")
+with t1:
+    status_tile("EEG file", *eeg_state)
+with t2:
+    status_tile("MRI image", *mri_state)
+with t3:
+    status_tile(
+        "Analysis mode",
+        mode or "Upload a file to begin",
+        "#2B2208" if mode else "#8A7F5C",
+    )
 
 # ---------- analysis ----------
+st.write("")
 run = st.button(
-    "✨  Run AI Analysis",
+    "Run analysis",
     type="primary",
     use_container_width=True,
     disabled=(mode is None or not eeg_ok),
 )
 
 if run:
+    st.session_state.pop("result", None)  # never show a stale result
     files = {}
 
     if eeg_bytes is not None:
-        files["eeg"] = (
-            eeg_file.name,
-            eeg_bytes,
-            "text/csv",
-        )
+        files["eeg"] = (eeg_file.name, eeg_bytes, "text/csv")
 
     if mri_bytes is not None:
-        files["mri"] = (
-            mri_file.name,
-            mri_bytes,
-            mri_file.type,
-        )
+        files["mri"] = (mri_file.name, mri_bytes, mri_file.type)
 
     try:
-        with st.spinner("🧠 Processing your uploaded data..."):
+        with st.spinner("Analysing your data..."):
             response = requests.post(
                 f"{api_url}/predict",
                 files=files,
@@ -518,7 +569,7 @@ if run:
     except requests.RequestException as exc:
         st.error(
             f"Could not reach the backend at {api_url}. "
-            f"Details: {exc}"
+            f"Check that it is running. Details: {exc}"
         )
 
 
@@ -526,77 +577,64 @@ if run:
 result = st.session_state.get("result")
 
 if result:
-    st.markdown("---")
-    st.markdown("## 📊 Analysis Results")
-    st.caption("Model output from the connected FastAPI backend.")
+    st.divider()
+    st.markdown("## Your results")
+    st.caption("Model output from the connected backend.")
 
-    left, right = st.columns([0.9, 1.1])
+    if "final_risk" not in result:
+        st.error("The backend response did not include a risk score.")
+    else:
+        left, right = st.columns([0.9, 1.1], gap="large")
 
-    with left:
-        show_risk(float(result["final_risk"]))
+        with left:
+            show_risk(float(result["final_risk"]))
 
-        if result.get("mode") == "fused":
-            st.info(f"Fusion weight α = {result['alpha']:.2f}")
+            if result.get("mode") == "fused":
+                used_alpha = float(result.get("alpha", alpha))
+                st.info(f"Combined using EEG weight {used_alpha:.2f}")
 
-    with right:
-        st.markdown(
-            """
-            <div class="section-label">INDIVIDUAL MODEL OUTPUTS</div>
-            """,
-            unsafe_allow_html=True,
-        )
+        with right:
+            if "eeg" in result:
+                probability = float(result["eeg"].get("probability", 0))
+                with st.container(border=True):
+                    card_header("〰️", "EEG model", "Signal analysis")
+                    st.metric(
+                        "Anomaly probability",
+                        f"{probability * 100:.1f}%",
+                    )
+                    st.progress(min(max(probability, 0.0), 1.0))
 
-        if "eeg" in result:
-            probability = float(result["eeg"]["probability"])
+            if "mri" in result:
+                mri_result = result["mri"]
+                with st.container(border=True):
+                    card_header("🧠", "MRI model", "Image classification")
+                    st.metric("Predicted label", str(mri_result.get("label", "—")))
 
-            st.markdown(
-                '<div class="section-card">'
-                '<div class="pill purple-pill">EEG MODEL</div>'
-                '<div class="section-title">〰️ Signal analysis</div>',
-                unsafe_allow_html=True,
-            )
+                    probabilities = mri_result.get("probs", {})
 
-            st.metric(
-                "EEG anomaly probability",
-                f"{probability * 100:.1f}%",
-            )
-            st.progress(min(max(probability, 0.0), 1.0))
-            st.markdown("</div>", unsafe_allow_html=True)
+                    if isinstance(probabilities, dict) and probabilities:
+                        chart_df = pd.DataFrame(
+                            {
+                                "Class": list(probabilities.keys()),
+                                "Probability": [
+                                    float(v) for v in probabilities.values()
+                                ],
+                            }
+                        ).set_index("Class")
+                    elif isinstance(probabilities, list) and probabilities:
+                        chart_df = pd.DataFrame({"Probability": probabilities})
+                    else:
+                        chart_df = None
 
-        if "mri" in result:
-            mri_result = result["mri"]
+                    if chart_df is not None:
+                        st.bar_chart(
+                            chart_df,
+                            horizontal=True,
+                            height=220,
+                            color="#E8A500",
+                        )
 
-            st.markdown(
-                '<div class="section-card">'
-                '<div class="pill cyan-pill">MRI MODEL</div>'
-                '<div class="section-title">🧠 Image classification</div>',
-                unsafe_allow_html=True,
-            )
-
-            st.metric("Model label", str(mri_result["label"]))
-
-            probabilities = mri_result.get("probs", {})
-
-            if isinstance(probabilities, dict):
-                chart_df = pd.DataFrame(
-                    {
-                        "Class": list(probabilities.keys()),
-                        "Probability": list(probabilities.values()),
-                    }
-                ).set_index("Class")
-            else:
-                chart_df = pd.DataFrame(
-                    {"Probability": probabilities}
-                )
-
-            st.bar_chart(
-                chart_df,
-                horizontal=True,
-                height=220,
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    with st.expander("🧾 View raw API response"):
+    with st.expander("View raw API response"):
         st.json(result)
 
     st.caption(
@@ -614,4 +652,3 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
