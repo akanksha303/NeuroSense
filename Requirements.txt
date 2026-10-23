@@ -8,3 +8,6 @@ python-multipart==0.0.9
 plotly==6.3.0
 streamlit
 scikit-learn
+streamlit
+requests
+
