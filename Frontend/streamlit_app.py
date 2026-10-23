@@ -30,13 +30,13 @@ st.markdown(
     @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;600;700&family=Figtree:wght@400;500;600;700&display=swap');
 
     :root {
-        --sun: #FFC93C;          /* primary yellow */
-        --sun-deep: #E8A500;     /* hover / strong accent */
-        --sun-soft: #FFF4CC;     /* tinted backgrounds */
-        --sun-wash: #FFFBEB;     /* page background */
-        --ink: #2B2208;          /* main text */
-        --ink-soft: #6F6342;     /* secondary text */
-        --line: #F1E3B0;         /* borders */
+        --brand: #2563EB;          /* primary blue */
+        --brand-deep: #1E3A8A;     /* navy: hero, hover */
+        --brand-soft: #E8F0FE;     /* tinted backgrounds */
+        --brand-wash: #F5F8FF;     /* page background */
+        --ink: #0F1B3D;          /* main text */
+        --ink-soft: #4B5879;     /* secondary text */
+        --line: #D6E2F8;         /* borders */
         --ok: #2E9B6A;           /* low risk */
         --warn: #D9810B;         /* moderate risk */
         --alert: #D2453D;        /* high risk */
@@ -44,7 +44,7 @@ st.markdown(
     }
 
     .stApp {
-        background: var(--sun-wash);
+        background: var(--brand-wash);
         font-family: 'Figtree', sans-serif;
         color: var(--ink);
     }
@@ -57,7 +57,7 @@ st.markdown(
 
     /* sidebar: light and warm, dark text (no forced white-on-white bugs) */
     [data-testid="stSidebar"] {
-        background: var(--sun-soft);
+        background: var(--brand-soft);
         border-right: 1px solid var(--line);
     }
     [data-testid="stSidebar"] h1,
@@ -66,7 +66,7 @@ st.markdown(
 
     /* hero: the one bold element on the page */
     .hero {
-        background: var(--sun);
+        background: var(--brand-deep);
         border-radius: 20px;
         padding: 30px 34px;
         margin: 0 0 18px 0;
@@ -79,12 +79,12 @@ st.markdown(
         font-family: 'Bricolage Grotesque', sans-serif;
         font-size: 40px;
         font-weight: 700;
-        color: var(--ink);
+        color: #FFFFFF;
         line-height: 1.1;
         margin: 0 0 8px 0;
     }
     .hero-subtitle {
-        color: #4A3C0E;
+        color: #DCE7FF;
         font-size: 16px;
         line-height: 1.6;
         max-width: 560px;
@@ -93,7 +93,7 @@ st.markdown(
     .hero-icon {
         font-size: 64px;
         line-height: 1;
-        background: rgba(255,255,255,.55);
+        background: rgba(255,255,255,.14);
         border-radius: 50%;
         width: 104px;
         height: 104px;
@@ -106,7 +106,7 @@ st.markdown(
     .notice {
         background: #FFFFFF;
         border: 1px solid var(--line);
-        border-left: 5px solid var(--sun-deep);
+        border-left: 5px solid var(--brand-deep);
         border-radius: 10px;
         padding: 12px 16px;
         color: var(--ink-soft);
@@ -172,7 +172,7 @@ st.markdown(
         background: linear-gradient(
             90deg,
             var(--ok) 0%, var(--ok) 38%,
-            var(--sun) 42%, var(--warn) 66%,
+            #F2B01E 42%, var(--warn) 66%,
             var(--alert) 72%, var(--alert) 100%
         );
     }
@@ -195,7 +195,7 @@ st.markdown(
     }
 
     .guidance {
-        background: var(--sun-soft);
+        background: var(--brand-soft);
         border: 1px solid var(--line);
         border-radius: var(--radius);
         padding: 16px 18px;
@@ -209,8 +209,8 @@ st.markdown(
 
     /* buttons and widgets */
     .stButton > button[kind="primary"] {
-        background: var(--sun);
-        color: var(--ink);
+        background: var(--brand);
+        color: #FFFFFF;
         border: none;
         border-radius: 12px;
         font-weight: 700;
@@ -218,21 +218,21 @@ st.markdown(
         font-size: 16px;
     }
     .stButton > button[kind="primary"]:hover:not(:disabled) {
-        background: var(--sun-deep);
-        color: var(--ink);
+        background: var(--brand-deep);
+        color: #FFFFFF;
     }
     .stButton > button[kind="primary"]:disabled {
-        background: #EDE6CB;
-        color: #A89E7C;
+        background: #D9E2F5;
+        color: #8896B3;
     }
     .stButton > button { border-radius: 10px; }
 
     div[data-testid="stFileUploader"] section {
-        background: var(--sun-wash);
-        border: 1.5px dashed var(--sun-deep);
+        background: var(--brand-wash);
+        border: 1.5px dashed var(--brand-deep);
         border-radius: 12px;
     }
-    div[data-testid="stProgressBar"] > div > div { background: var(--sun-deep); }
+    div[data-testid="stProgressBar"] > div > div { background: var(--brand-deep); }
 
     .footer {
         color: var(--ink-soft);
@@ -436,8 +436,8 @@ mri_bytes = None
 eeg_file = None
 mri_file = None
 eeg_ok = True
-eeg_state = ("Waiting for file", "#8A7F5C")
-mri_state = ("Waiting for file", "#8A7F5C")
+eeg_state = ("Waiting for file", "#6B7A99")
+mri_state = ("Waiting for file", "#6B7A99")
 
 with col_eeg:
     with st.container(border=True):
@@ -476,7 +476,7 @@ with col_eeg:
                 st.line_chart(
                     pd.DataFrame({"Signal amplitude": values}),
                     height=200,
-                    color="#E8A500",
+                    color="#2563EB",
                 )
                 eeg_state = ("Ready", "#2E9B6A")
 
@@ -523,7 +523,7 @@ with t3:
     status_tile(
         "Analysis mode",
         mode or "Upload a file to begin",
-        "#2B2208" if mode else "#8A7F5C",
+        "#0F1B3D" if mode else "#6B7A99",
     )
 
 # ---------- analysis ----------
@@ -631,7 +631,7 @@ if result:
                             chart_df,
                             horizontal=True,
                             height=220,
-                            color="#E8A500",
+                            color="#2563EB",
                         )
 
     with st.expander("View raw API response"):
