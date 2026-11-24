@@ -1,61 +1,54 @@
 """
-NeuroSense - EEG and MRI analysis workspace (research prototype)
-Run: streamlit run Frontend/streamlit_app.py
+NeuroSense - Multimodal EEG & MRI Analysis Workspace
+Run:
+    streamlit run Frontend/streamlit_app.py
 
-Single file, no extra config needed.
-
-UI: clinical light theme (white surfaces, deep teal accent, restrained colour),
-health-themed loading screen that checks the backend, report-style results.
-Built only with Streamlit components, CSS and inline SVG.
-Backend contract (POST /predict, GET /health) is unchanged.
-
-Optional: add .streamlit/config.toml so Streamlit's own widgets match the theme:
-
-    [theme]
-    base = "light"
-    primaryColor = "#0B7A75"
-    backgroundColor = "#F3F6F8"
-    secondaryBackgroundColor = "#FFFFFF"
-    textColor = "#102A3C"
+Environment / Secrets:
+    NEUROSENSE_API: Base URL for the FastAPI backend (default: http://localhost:8000)
 """
+
+from __future__ import annotations
 
 import html
 import io
 import json
 import math
 import os
-import time
+from dataclasses import dataclass
+from typing import Any
 
+import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
 
 EEG_LEN = 178
-
-
-def _default_api() -> str:
-    """Backend URL: Streamlit secret, then env var, then localhost."""
-    try:
-        if "NEUROSENSE_API" in st.secrets:
-            return str(st.secrets["NEUROSENSE_API"])
-    except Exception:  # no secrets file configured
-        pass
-    return os.getenv("NEUROSENSE_API", "http://localhost:8000")
-
-
-DEFAULT_API = _default_api()
+DEFAULT_TIMEOUT_HEALTH = 5.0
+DEFAULT_TIMEOUT_PREDICT = 45.0
 
 st.set_page_config(
-    page_title="NeuroSense | EEG and MRI analysis",
+    page_title="NeuroSense | Multimodal EEG & MRI Workspace",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+
 # =====================================================================
-# THEME
-# All colours are CSS variables in :root. Change them there to re-theme.
+# CONFIGURATION & STYLING
 # =====================================================================
+def resolve_backend_url() -> str:
+    """Resolve backend URL from st.secrets, environment variable, or localhost."""
+    try:
+        if "NEUROSENSE_API" in st.secrets and st.secrets["NEUROSENSE_API"]:
+            return str(st.secrets["NEUROSENSE_API"]).strip().rstrip("/")
+    except Exception:
+        pass
+    return os.getenv("NEUROSENSE_API", "http://localhost:8000").strip().rstrip("/")
+
+
+DEFAULT_API_URL = resolve_backend_url()
+
 THEME_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
@@ -63,1082 +56,1100 @@ THEME_CSS = """
 :root {
     --bg: #F3F6F8;
     --surface: #FFFFFF;
+    --surface-subtle: #F7F9FB;
     --ink: #102A3C;
-    --muted: #5B6F80;
-    --faint: #8A9AA8;
+    --muted: #526778;
+    --faint: #7E90A0;
     --line: #D8E1E8;
     --teal: #0B7A75;
     --teal-dark: #095F5B;
     --teal-soft: #E3F2F1;
-    --ok: #2E7D5B;
+    --ok: #256F4F;
     --ok-soft: #E4F3EB;
-    --warn: #B26A00;
+    --warn: #A66300;
     --warn-soft: #FDF1DC;
-    --alert: #B83B3B;
+    --alert: #B03535;
     --alert-soft: #FBE7E7;
     --radius: 10px;
 }
 
-/* ---------- page ---------- */
 .stApp {
     background: var(--bg);
     color: var(--ink);
-    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
 }
-.block-container { padding-top: 1.6rem; max-width: 1160px; }
-[data-testid="stHeader"] { background: rgba(243, 246, 248, .85); backdrop-filter: blur(6px); }
+
+.block-container {
+    padding-top: 1.5rem;
+    padding-bottom: 2.5rem;
+    max-width: 1180px;
+}
+
+[data-testid="stHeader"] {
+    background: rgba(243, 246, 248, 0.88);
+    backdrop-filter: blur(6px);
+}
+
 .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
-    font-family: 'IBM Plex Sans', sans-serif !important;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif !important;
     color: var(--ink) !important;
     font-weight: 600 !important;
-    letter-spacing: -0.005em;
+    letter-spacing: -0.01em;
 }
-.stApp h2 { font-size: 1.45rem !important; }
-[data-testid="stMarkdownContainer"], [data-testid="stWidgetLabel"] p,
-[data-testid="stCheckbox"] p { color: var(--ink); }
-[data-testid="stCaptionContainer"], [data-testid="stImageCaption"] { color: var(--muted) !important; }
-[data-testid="stAlert"] { border-radius: 8px; }
 
-/* ---------- sidebar ---------- */
-[data-testid="stSidebar"] { background: var(--surface); border-right: 1px solid var(--line); }
-[data-baseweb="input"], [data-baseweb="base-input"] { background: #F7F9FB !important; border-radius: 8px !important; }
-[data-baseweb="input"]:focus-within, [data-baseweb="base-input"]:focus-within { border-color: var(--teal) !important; }
-[data-testid="stSidebar"] input { color: var(--ink) !important; -webkit-text-fill-color: var(--ink) !important; }
-hr { border-color: var(--line) !important; }
+.stApp h2 { font-size: 1.42rem !important; }
+.stApp h3 { font-size: 1.15rem !important; }
 
-/* ---------- widgets ---------- */
-[data-baseweb="slider"] [role="slider"] { background: var(--teal) !important; border-color: var(--teal) !important; }
-[data-testid="stSlider"] [data-baseweb="slider"] div[style*="linear-gradient"],
-[data-testid="stSelectSlider"] [data-baseweb="slider"] div[style*="linear-gradient"] {
-    background: var(--teal) !important;
+[data-testid="stSidebar"] {
+    background: var(--surface);
+    border-right: 1px solid var(--line);
 }
-[data-testid="stFileUploader"] section {
-    background: #F7F9FB; border: 1.5px dashed #9FB4C3; border-radius: 8px;
-}
-[data-testid="stFileUploader"] section * { color: var(--muted) !important; }
-[data-testid="stFileUploader"] button {
-    background: var(--surface) !important; border: 1px solid var(--teal) !important;
-    color: var(--teal-dark) !important; border-radius: 8px !important;
-}
-[data-testid="stFileUploader"] button:hover { background: var(--teal-soft) !important; }
-[data-testid="stExpander"] { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 
-.stButton > button[kind="secondary"], button[data-testid="stBaseButton-secondary"] {
-    background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
-}
-.stButton > button[kind="secondary"]:hover, button[data-testid="stBaseButton-secondary"]:hover {
-    border-color: var(--teal); color: var(--teal-dark);
-}
-.stButton > button[kind="primary"], button[data-testid="stBaseButton-primary"] {
-    background: var(--teal); color: #FFFFFF; border: none; border-radius: 8px;
-    font-weight: 600; font-size: 16px; min-height: 52px;
-}
-.stButton > button[kind="primary"]:hover:not(:disabled),
-button[data-testid="stBaseButton-primary"]:hover:not(:disabled) { background: var(--teal-dark); color: #FFFFFF; }
-.stButton > button[kind="primary"]:disabled,
-button[data-testid="stBaseButton-primary"]:disabled { background: #E3E9EE; color: var(--faint); }
-.stButton > button:focus-visible { outline: 3px solid rgba(11, 122, 117, .45); outline-offset: 2px; }
-
-/* bordered containers are the main white panels */
 [data-testid="stVerticalBlockBorderWrapper"] {
-    background: var(--surface); border: 1px solid var(--line) !important; border-radius: var(--radius) !important;
+    background: var(--surface);
+    border: 1px solid var(--line) !important;
+    border-radius: var(--radius) !important;
 }
 
-/* tabs = main navigation */
-.stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--line); }
-.stTabs [data-baseweb="tab"] { height: 46px; padding: 0 18px; font-weight: 500; color: var(--muted); }
-.stTabs [data-baseweb="tab"] * { color: inherit !important; }
-.stTabs [aria-selected="true"] { color: var(--teal-dark) !important; font-weight: 600; }
-.stTabs [data-baseweb="tab-highlight"] { background: var(--teal) !important; height: 3px; }
+[data-testid="stFileUploader"] section {
+    background: var(--surface-subtle);
+    border: 1.5px dashed #9FB4C3;
+    border-radius: 8px;
+}
+
+[data-testid="stFileUploader"] button {
+    background: var(--surface) !important;
+    border: 1px solid var(--teal) !important;
+    color: var(--teal-dark) !important;
+    border-radius: 8px !important;
+}
+
+[data-testid="stFileUploader"] button:hover {
+    background: var(--teal-soft) !important;
+}
+
+.stButton > button[kind="primary"],
+button[data-testid="stBaseButton-primary"] {
+    background: var(--teal);
+    color: #FFFFFF;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.98rem;
+    min-height: 48px;
+}
+
+.stButton > button[kind="primary"]:hover:not(:disabled),
+button[data-testid="stBaseButton-primary"]:hover:not(:disabled) {
+    background: var(--teal-dark);
+    color: #FFFFFF;
+}
+
+.stButton > button[kind="primary"]:disabled,
+button[data-testid="stBaseButton-primary"]:disabled {
+    background: #E2E8EE;
+    color: var(--faint);
+}
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 6px;
+    border-bottom: 1px solid var(--line);
+}
+
+.stTabs [data-baseweb="tab"] {
+    height: 44px;
+    padding: 0 18px;
+    font-weight: 500;
+    color: var(--muted);
+}
+
+.stTabs [aria-selected="true"] {
+    color: var(--teal-dark) !important;
+    font-weight: 600;
+}
+
+.stTabs [data-baseweb="tab-highlight"] {
+    background: var(--teal) !important;
+    height: 3px;
+}
+
 .stTabs [data-baseweb="tab-border"] { display: none; }
 
-/* ---------- top bar ---------- */
-.topbar {
-    display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-    padding: 4px 0 18px 0; border-bottom: 1px solid var(--line); margin-bottom: 14px;
-}
-.brand { display: flex; align-items: center; gap: 12px; }
-.brand-mark {
-    width: 40px; height: 40px; border-radius: 10px; background: var(--teal);
-    display: flex; align-items: center; justify-content: center;
-}
-.brand-mark svg { width: 24px; height: 24px; }
-.brand-name { font-size: 22px; font-weight: 700; color: var(--ink); line-height: 1.1; }
-.brand-sub { font-size: 13.5px; color: var(--muted); }
-.pill {
-    background: var(--warn-soft); color: var(--warn); border: 1px solid #F0D9A8;
-    border-radius: 999px; padding: 5px 14px; font-size: 13px; font-weight: 600;
-}
-.intro { color: var(--muted); font-size: 15px; line-height: 1.65; max-width: 760px; margin: 0 0 14px 0; }
-
-/* ---------- disclaimer ---------- */
-.disclaimer {
-    background: var(--warn-soft); border: 1px solid #F0D9A8; border-left: 4px solid var(--warn);
-    border-radius: 8px; padding: 12px 16px; color: #5C3B00; font-size: 14px; line-height: 1.6; margin: 0 0 18px 0;
-}
-.disclaimer b { color: #3F2800; }
-
-/* ---------- loading screen ---------- */
-.boot {
-    position: fixed; inset: 0; z-index: 99999; background: var(--bg);
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
-    font-family: 'IBM Plex Sans', system-ui, sans-serif; padding: 24px; text-align: center;
-}
-.boot svg { width: min(460px, 86vw); height: auto; }
-.boot-ecg { stroke-dasharray: 1; stroke-dashoffset: 1; animation: ns-ecg 2.4s linear infinite; }
-@keyframes ns-ecg { 0% { stroke-dashoffset: 1; } 70% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: 0; opacity: .15; } }
-.boot-title { font-size: 26px; font-weight: 700; color: var(--ink); }
-.boot-msg { font-size: 15px; color: var(--muted); min-height: 22px; }
-.boot-bar { width: min(320px, 70vw); height: 4px; background: var(--line); border-radius: 999px; overflow: hidden; }
-.boot-bar span { display: block; height: 100%; width: 40%; background: var(--teal); border-radius: 999px; animation: ns-slide 1.4s ease-in-out infinite; }
-@keyframes ns-slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
-.boot-note { font-size: 12.5px; color: var(--faint); }
-
-/* ---------- sidebar pieces ---------- */
-.conn { display: flex; align-items: center; gap: 8px; font-size: 14px; margin: 2px 0 10px 0; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
-.dot.ok { background: var(--ok); } .dot.bad { background: var(--alert); }
-.split { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--line); margin-top: 4px; }
-.split-eeg { background: var(--teal); }
-.split-mri { background: #5B8DB8; }
-.split-legend { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
-
-/* ---------- panels ---------- */
-.panel-title { font-size: 17px; font-weight: 600; color: var(--ink); margin: 0 0 2px 0; }
-.panel-hint { color: var(--muted); font-size: 13.5px; margin: 0 0 10px 0; }
-
-.status { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
-.status-label { color: var(--muted); font-size: 13px; }
-.status-value { font-size: 17px; font-weight: 600; margin-top: 2px; }
-.tone-ok { color: var(--ok); } .tone-bad { color: var(--alert); }
-.tone-idle { color: var(--faint); } .tone-info { color: var(--ink); }
-
-.stat-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 12px 0; }
-.stat { flex: 1 1 110px; background: #F7F9FB; border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px; }
-.stat-label { color: var(--muted); font-size: 12.5px; }
-.stat-value { color: var(--ink); font-size: 17px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
-
-.chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px 0; }
-.chip { background: var(--teal-soft); border: 1px solid #BFE0DD; color: var(--teal-dark); border-radius: 999px; padding: 3px 12px; font-size: 12.5px; }
-
-/* ---------- signal viewer ---------- */
-.viewer svg { width: 100%; height: auto; display: block; }
-.viewer .grid { stroke: #E3EAF0; stroke-width: 1; }
-.viewer .axis { fill: var(--muted); font-size: 12px; font-family: 'IBM Plex Sans', sans-serif; }
-.viewer .trace { stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; fill: none; stroke: var(--teal); }
-.viewer .trace-smooth { stroke: #1D4ED8; stroke-width: 2.4; stroke-dasharray: 7 5; fill: none; stroke-linecap: round; }
-.viewer .hit { fill: rgba(11, 122, 117, 0); cursor: crosshair; }
-.viewer .hit:hover { fill: var(--teal); stroke: #FFFFFF; stroke-width: 2; }
-.legend { display: flex; gap: 18px; color: var(--muted); font-size: 13px; margin: 2px 0 6px 0; }
-.legend i { display: inline-block; width: 22px; height: 3px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
-
-/* ---------- results ---------- */
-.report { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 24px; }
-.report-label { color: var(--muted); font-size: 13.5px; }
-.report-score { font-size: 54px; font-weight: 700; line-height: 1.05; margin: 2px 0 8px 0; font-variant-numeric: tabular-nums; }
-.badge { display: inline-block; padding: 5px 14px; border-radius: 999px; font-weight: 600; font-size: 14px; }
-.scale { position: relative; display: flex; height: 12px; border-radius: 999px; overflow: visible; margin: 26px 0 6px 0; }
-.scale .seg { height: 100%; }
-.scale .seg.low { width: 40%; background: #BFE3D0; border-radius: 999px 0 0 999px; }
-.scale .seg.mod { width: 30%; background: #F3D9A0; }
-.scale .seg.high { width: 30%; background: #EDB4B4; border-radius: 0 999px 999px 0; }
-.scale .marker {
-    position: absolute; top: -7px; width: 4px; height: 26px; border-radius: 2px;
-    background: var(--ink); transform: translateX(-2px);
-}
-.scale-ticks { position: relative; height: 16px; font-size: 12px; color: var(--faint); }
-.scale-ticks span { position: absolute; transform: translateX(-50%); }
-.band-note { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; color: var(--ink); font-size: 14.5px; line-height: 1.65; }
-.band-note small { display: block; color: var(--muted); margin-top: 8px; font-size: 13px; }
-
-.bar-row { margin: 11px 0; }
-.bar-head { display: flex; justify-content: space-between; font-size: 14px; color: var(--ink); margin-bottom: 5px; }
-.bar-head span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
-.bar-track { height: 8px; border-radius: 999px; background: #E6ECF1; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 999px; background: #8FB9C7; }
-.bar-fill.top { background: var(--teal); }
-
-.big-value { font-size: 30px; font-weight: 700; color: var(--ink); margin: 2px 0 4px 0; }
-.big-label { color: var(--muted); font-size: 13.5px; }
-
-.rawjson {
-    background: #F7F9FB; border: 1px solid var(--line); border-radius: 8px; color: var(--ink);
-    padding: 12px 14px; font-size: 12.5px; line-height: 1.5; overflow-x: auto; max-height: 320px;
+.ns-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 14px;
 }
 
-/* ---------- info tabs ---------- */
-.info { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; height: 100%; }
-.info h4 { margin: 0 0 8px 0; font-size: 16.5px; }
-.info p, .info li { color: var(--muted); font-size: 14.5px; line-height: 1.7; }
-.info ul { margin: 0; padding-left: 18px; }
-.step-no {
-    display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
-    border-radius: 50%; background: var(--teal); color: #FFFFFF; font-weight: 600; font-size: 14px; margin-bottom: 8px;
+.ns-brand { display: flex; align-items: center; gap: 12px; }
+
+.ns-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: var(--teal);
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
-.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 2px 0; }
-.flow span { background: #F7F9FB; border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 7px 12px; font-size: 14px; }
-.flow em { color: var(--teal); font-style: normal; }
 
-.footer { color: var(--faint); text-align: center; font-size: 12.5px; padding: 26px 0 6px 0; }
+.ns-mark svg { width: 22px; height: 22px; }
+.ns-title { font-size: 1.35rem; font-weight: 700; color: var(--ink); line-height: 1.15; }
+.ns-subtitle { font-size: 0.85rem; color: var(--muted); }
 
-@media (max-width: 820px) { .report-score { font-size: 44px; } }
-@media (prefers-reduced-motion: reduce) { .boot-ecg, .boot-bar span { animation: none; stroke-dashoffset: 0; } }
+.ns-pill {
+    background: var(--teal-soft);
+    color: var(--teal-dark);
+    border: 1px solid #BFE0DD;
+    border-radius: 999px;
+    padding: 5px 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.ns-disclaimer {
+    background: var(--warn-soft);
+    border: 1px solid #F0D9A8;
+    border-left: 4px solid var(--warn);
+    border-radius: 8px;
+    padding: 12px 16px;
+    color: #5C3B00;
+    font-size: 0.88rem;
+    line-height: 1.55;
+    margin-bottom: 18px;
+}
+
+.ns-conn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.88rem;
+    font-weight: 500;
+    margin-bottom: 10px;
+}
+
+.ns-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.ns-dot.ok { background: var(--ok); }
+.ns-dot.bad { background: var(--alert); }
+.ns-dot.unknown { background: var(--faint); }
+
+.ns-split {
+    display: flex;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--line);
+    margin-top: 6px;
+}
+
+.ns-split-eeg { background: var(--teal); }
+.ns-split-mri { background: #4F7FA8; }
+
+.ns-split-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+}
+
+.ns-panel-title { font-size: 1.04rem; font-weight: 600; color: var(--ink); margin-bottom: 2px; }
+.ns-panel-hint { font-size: 0.84rem; color: var(--muted); margin-bottom: 10px; }
+
+.ns-status {
+    background: var(--surface-subtle);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-top: 10px;
+}
+
+.ns-status-k { font-size: 0.78rem; color: var(--muted); }
+.ns-status-v { font-size: 0.98rem; font-weight: 600; margin-top: 2px; }
+.ns-tone-ok { color: var(--ok); }
+.ns-tone-bad { color: var(--alert); }
+.ns-tone-idle { color: var(--muted); }
+
+.ns-report {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+}
+
+.ns-score {
+    font-size: 3.1rem;
+    font-weight: 700;
+    line-height: 1.05;
+    margin: 4px 0 10px 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.ns-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 0.84rem;
+    font-weight: 600;
+}
+
+.ns-scale {
+    position: relative;
+    display: flex;
+    height: 11px;
+    border-radius: 999px;
+    margin: 24px 0 6px 0;
+}
+
+.ns-seg-low { width: 40%; background: #BFE3D0; border-radius: 999px 0 0 999px; }
+.ns-seg-mod { width: 30%; background: #F3D9A0; }
+.ns-seg-high { width: 30%; background: #EDB4B4; border-radius: 0 999px 999px 0; }
+
+.ns-marker {
+    position: absolute;
+    top: -6px;
+    width: 4px;
+    height: 23px;
+    border-radius: 2px;
+    background: var(--ink);
+    transform: translateX(-2px);
+}
+
+.ns-ticks {
+    position: relative;
+    height: 16px;
+    font-size: 0.75rem;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+}
+
+.ns-ticks span { position: absolute; transform: translateX(-50%); }
+
+.ns-note {
+    border-top: 1px solid var(--line);
+    margin-top: 16px;
+    padding-top: 12px;
+    font-size: 0.9rem;
+    line-height: 1.55;
+    color: var(--ink);
+}
+
+.ns-note small {
+    display: block;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.ns-bar-row { margin: 10px 0; }
+.ns-bar-head {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.88rem;
+    margin-bottom: 4px;
+}
+
+.ns-bar-head span:last-child {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.ns-bar-track {
+    height: 8px;
+    border-radius: 999px;
+    background: #E6ECF1;
+    overflow: hidden;
+}
+
+.ns-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: #8FB9C7;
+}
+
+.ns-bar-fill.top { background: var(--teal); }
+
+.ns-metric-big {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--ink);
+    margin: 2px 0 8px 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.ns-svg-wrap svg { width: 100%; height: auto; display: block; }
+.ns-svg-wrap .grid { stroke: #E3EAF0; stroke-width: 1; }
+.ns-svg-wrap .axis { fill: var(--muted); font-size: 12px; font-family: 'IBM Plex Sans', sans-serif; }
+.ns-svg-wrap .trace { stroke: var(--teal); stroke-width: 2; fill: none; stroke-linejoin: round; }
+.ns-svg-wrap .trace-smooth { stroke: #1D4ED8; stroke-width: 2.2; stroke-dasharray: 6 4; fill: none; }
+.ns-svg-wrap .hit { fill: rgba(11, 122, 117, 0); cursor: crosshair; }
+.ns-svg-wrap .hit:hover { fill: var(--teal); stroke: #FFFFFF; stroke-width: 2; }
+
+.ns-legend {
+    display: flex;
+    gap: 18px;
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+}
+
+.ns-legend i {
+    display: inline-block;
+    width: 18px;
+    height: 3px;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 6px;
+}
+
+.ns-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    height: 100%;
+}
+
+.ns-card h4 { margin: 0 0 8px 0; font-size: 1rem; }
+.ns-card p, .ns-card li { color: var(--muted); font-size: 0.9rem; line-height: 1.65; }
+.ns-card ul { margin: 0; padding-left: 18px; }
+
+.ns-step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--teal);
+    color: #FFFFFF;
+    font-weight: 600;
+    font-size: 0.85rem;
+    margin-bottom: 8px;
+}
+
+.ns-footer {
+    text-align: center;
+    color: var(--faint);
+    font-size: 0.8rem;
+    padding-top: 24px;
+}
 </style>
 """
-st.markdown(THEME_CSS, unsafe_allow_html=True)
+
+PULSE_SVG = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" '
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<path d="M2 12h4l2.5-6 4 12 2.5-6H22"/></svg>'
+)
+
+BAND_GUIDANCE = {
+    "Low": (
+        "Score falls in the lower display band. A low score does not rule out "
+        "clinical findings and is not a medical diagnosis."
+    ),
+    "Moderate": (
+        "Score falls in the middle display band. Treat this output strictly as "
+        "an exploratory signal and consult a qualified clinician."
+    ),
+    "High": (
+        "Score falls in the higher display band. This is an unvalidated model "
+        "output, not a diagnosis. Seek professional medical evaluation."
+    ),
+}
 
 
 # =====================================================================
-# HELPERS
+# DOMAIN LOGIC & BACKEND CLIENT
 # =====================================================================
-def md(markup: str):
-    """Render an HTML snippet. Indentation and blank lines are removed so
-    Streamlit's markdown parser never mistakes the HTML for a code block."""
+@dataclass(frozen=True)
+class HealthStatus:
+    reachable: bool
+    detail: str
+    payload: dict[str, Any] | None = None
+
+
+def render_html(markup: str) -> None:
     cleaned = "\n".join(
         line.strip() for line in markup.strip().splitlines() if line.strip()
     )
     st.markdown(cleaned, unsafe_allow_html=True)
 
 
-def json_pre(obj):
-    """Show JSON in a readable block."""
-    text = html.escape(json.dumps(obj, indent=2, ensure_ascii=False))
-    st.markdown(f'<pre class="rawjson">{text}</pre>', unsafe_allow_html=True)
-
-
-def parse_eeg(raw: bytes):
-    """Return a list of floats, or None if the file is not purely numeric."""
+def parse_eeg_bytes(raw: bytes) -> list[float] | None:
+    """Parse comma-, semicolon-, or whitespace-delimited finite floats."""
     try:
         text = raw.decode("utf-8", errors="ignore")
-        values = [
-            float(value)
-            for value in text.replace(",", " ").replace(";", " ").split()
-        ]
+        tokens = text.replace(",", " ").replace(";", " ").split()
+        values = [float(tok) for tok in tokens]
     except ValueError:
         return None
-    if any(not math.isfinite(v) for v in values):  # rejects nan / inf
+    if not values or any(not math.isfinite(v) for v in values):
         return None
     return values
 
 
-def risk_level(probability: float):
-    """Return (label, text colour, badge background)."""
-    if probability >= 0.70:
-        return "High", "#B83B3B", "#FBE7E7"
-    if probability >= 0.40:
-        return "Moderate", "#B26A00", "#FDF1DC"
-    return "Low", "#2E7D5B", "#E4F3EB"
-
-
-BAND_NOTES = {
-    "Low": (
-        "The model output is in the lower range. A low score does not rule "
-        "anything out, and it is not a diagnosis."
-    ),
-    "Moderate": (
-        "The model output is in a middle range. Treat it as a research "
-        "signal only, and discuss any symptoms or concerns with a clinician."
-    ),
-    "High": (
-        "The model output is in the higher range. This is an experimental "
-        "score, not a diagnosis. If you have symptoms or concerns, please "
-        "talk to a qualified clinician."
-    ),
-}
-
-HEART_ICON = (
-    '<svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" '
-    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    '<path d="M2 12h4l2.5-6 4 12 2.5-6H22"/></svg>'
-)
-
-
-def panel_head(title: str, hint: str):
-    md(
-        f"""
-        <div class="panel-title">{html.escape(title)}</div>
-        <div class="panel-hint">{html.escape(hint)}</div>
-        """
+def generate_sample_eeg_csv(seed: int = 42, anomalous: bool = False) -> bytes:
+    """Generate a deterministic 178-sample EEG CSV for quick evaluation."""
+    rng = np.random.default_rng(seed)
+    t = np.linspace(0.0, 1.0, EEG_LEN)
+    signal = (
+        0.65 * np.sin(2 * np.pi * 8.0 * t)
+        + 0.30 * np.cos(2 * np.pi * 16.0 * t)
+        + rng.normal(0.0, 0.12, size=EEG_LEN)
     )
+    if anomalous:
+        burst = np.exp(-0.5 * ((t - 0.55) / 0.06) ** 2) * np.sin(2 * np.pi * 28.0 * t)
+        signal = signal + 2.2 * burst
+    df = pd.DataFrame({"sample": np.arange(EEG_LEN), "amplitude": np.round(signal, 6)})
+    buf = io.StringIO()
+    df["amplitude"].to_csv(buf, index=False, header=False)
+    return buf.getvalue().encode("utf-8")
 
 
-def status_tile(label: str, value: str, tone: str):
-    md(
-        f"""
-        <div class="status">
-            <div class="status-label">{html.escape(label)}</div>
-            <div class="status-value tone-{tone}">{html.escape(value)}</div>
-        </div>
-        """
-    )
+def smooth_values(values: list[float], window: int) -> list[float]:
+    if window <= 1:
+        return list(values)
+    series = pd.Series(values, dtype="float64")
+    return series.rolling(window=window, center=True, min_periods=1).mean().tolist()
 
 
-def stat_row(items):
-    cells = "".join(
-        f'<div class="stat"><div class="stat-label">{html.escape(k)}</div>'
-        f'<div class="stat-value">{html.escape(v)}</div></div>'
-        for k, v in items
-    )
-    md(f'<div class="stat-row">{cells}</div>')
+def classify_band(probability: float) -> tuple[str, str, str]:
+    """Return (band_label, text_color, badge_bg) for display purposes."""
+    p = min(max(float(probability), 0.0), 1.0)
+    if p >= 0.70:
+        return "High", "#B03535", "#FBE7E7"
+    if p >= 0.40:
+        return "Moderate", "#A66300", "#FDF1DC"
+    return "Low", "#256F4F", "#E4F3EB"
 
 
-def prob_bar(label: str, probability: float, highlight: bool = False):
-    percent = min(max(float(probability), 0.0), 1.0) * 100
-    return (
-        '<div class="bar-row">'
-        f'<div class="bar-head"><span>{html.escape(str(label))}</span>'
-        f"<span>{percent:.1f}%</span></div>"
-        '<div class="bar-track">'
-        f'<div class="bar-fill{" top" if highlight else ""}" '
-        f'style="width:{percent:.1f}%"></div></div></div>'
-    )
-
-
-# =====================================================================
-# LOADING SCREEN (runs once per session, checks the backend for real)
-# =====================================================================
-def _ecg_path(width=460, height=90, beats=3) -> str:
-    """One ECG-style trace made of repeated P-QRS-T beats."""
-    mid = height / 2
-    beat_w = width / beats
-    pts = [f"0 {mid}"]
-    for b in range(beats):
-        x0 = b * beat_w
-        shape = [
-            (0.10, 0), (0.16, -6), (0.22, 0),            # P wave
-            (0.34, 0), (0.38, 8), (0.44, -38), (0.50, 30), (0.55, 0),  # QRS
-            (0.68, 0), (0.76, -12), (0.84, 0), (1.00, 0),  # T wave
-        ]
-        for frac, dy in shape:
-            pts.append(f"{x0 + frac * beat_w:.1f} {mid + dy:.1f}")
-    return "M" + " L".join(pts)
-
-
-def boot_html(message: str, note: str = "") -> str:
-    return (
-        '<div class="boot" role="status" aria-live="polite">'
-        '<svg viewBox="0 0 460 90" aria-hidden="true">'
-        '<path d="M0 45 H460" stroke="#D8E1E8" stroke-width="1.5" fill="none"/>'
-        f'<path class="boot-ecg" d="{_ecg_path()}" pathLength="1" fill="none" '
-        'stroke="#0B7A75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>'
-        "</svg>"
-        '<div class="boot-title">NeuroSense</div>'
-        f'<div class="boot-msg">{html.escape(message)}</div>'
-        '<div class="boot-bar"><span></span></div>'
-        f'<div class="boot-note">{html.escape(note)}</div>'
-        "</div>"
-    )
-
-
-def run_boot_screen():
-    """Show the loading screen while we wake up and ping the backend."""
-    slot = st.empty()
-    slot.markdown(
-        boot_html("Starting the analysis workspace", "Research prototype - not for clinical use"),
-        unsafe_allow_html=True,
-    )
-    started = time.time()
-    backend_ok = False
-    for _ in range(4):  # free hosts can take a few seconds to wake up
+@st.cache_data(ttl=15, show_spinner=False)
+def check_backend_health(base_url: str) -> HealthStatus:
+    """Query GET /health with short caching to keep navigation responsive."""
+    if not base_url:
+        return HealthStatus(False, "No backend URL configured")
+    try:
+        resp = requests.get(f"{base_url}/health", timeout=DEFAULT_TIMEOUT_HEALTH)
+        resp.raise_for_status()
         try:
-            reply = requests.get(f"{DEFAULT_API.rstrip('/')}/health", timeout=4)
-            reply.raise_for_status()
-            backend_ok = True
-            break
-        except requests.RequestException:
-            time.sleep(1.5)
-    if time.time() - started < 2.0:  # avoid a flash on fast connections
-        time.sleep(2.0 - (time.time() - started))
-
-    slot.markdown(
-        boot_html(
-            "Analysis server connected" if backend_ok else "Analysis server not reachable yet",
-            "You can change the server address in the sidebar.",
-        ),
-        unsafe_allow_html=True,
-    )
-    time.sleep(0.7)
-    slot.empty()
-    st.session_state["booted"] = True
-    st.session_state["backend_ok"] = backend_ok
+            data = resp.json()
+        except ValueError:
+            data = {"status": "ok (non-JSON response)"}
+        return HealthStatus(True, f"HTTP {resp.status_code} · Healthy", data)
+    except requests.RequestException as exc:
+        return HealthStatus(False, str(exc))
 
 
-if not st.session_state.get("booted"):
-    run_boot_screen()
+def request_prediction(
+    base_url: str,
+    eeg_payload: tuple[str, bytes] | None,
+    mri_payload: tuple[str, bytes, str] | None,
+    alpha: float,
+) -> tuple[bool, dict[str, Any] | str]:
+    """Send selected modalities to POST /predict and return (ok, result_or_error)."""
+    files: dict[str, tuple[Any, ...]] = {}
+    if eeg_payload is not None:
+        name, raw_bytes = eeg_payload
+        files["eeg"] = (name, raw_bytes, "text/csv")
+    if mri_payload is not None:
+        name, raw_bytes, mime = mri_payload
+        files["mri"] = (name, raw_bytes, mime)
+
+    try:
+        resp = requests.post(
+            f"{base_url}/predict",
+            files=files,
+            data={"alpha": f"{alpha:.4f}"},
+            timeout=DEFAULT_TIMEOUT_PREDICT,
+        )
+        resp.raise_for_status()
+        parsed = resp.json()
+        if not isinstance(parsed, dict) or "final_risk" not in parsed:
+            return False, "Backend response missing required 'final_risk' field."
+        return True, parsed
+    except requests.RequestException as exc:
+        return False, f"Request failed: {exc}"
+    except ValueError:
+        return False, "Backend returned invalid JSON from POST /predict."
 
 
-# ---------- interactive EEG viewer (inline SVG built from the uploaded values) ----------
-def signal_svg(values, start, end, smoothed=None) -> str:
+# =====================================================================
+# VISUALIZATION & REPORT COMPONENTS
+# =====================================================================
+def build_eeg_svg(
+    values: list[float], start: int, end: int, smoothed: list[float] | None = None
+) -> str:
     seg = values[start : end + 1]
     n = len(seg)
-    W, H = 900, 320
-    pl, pr, pt, pb = 66, 18, 16, 42
+    width, height = 900, 310
+    pad_l, pad_r, pad_t, pad_b = 64, 18, 14, 42
 
     lo, hi = min(seg), max(seg)
-    if hi == lo:
-        lo, hi = lo - 1, hi + 1
-    margin = (hi - lo) * 0.08
-    lo, hi = lo - margin, hi + margin
+    if math.isclose(lo, hi):
+        lo, hi = lo - 1.0, hi + 1.0
+    pad = (hi - lo) * 0.08
+    lo, hi = lo - pad, hi + pad
 
-    def px(i):
-        return pl + (W - pl - pr) * (i / (n - 1))
+    def to_x(idx: int) -> float:
+        return pad_l + (width - pad_l - pad_r) * (idx / max(n - 1, 1))
 
-    def py(v):
-        return pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo))
+    def to_y(val: float) -> float:
+        return pad_t + (height - pad_t - pad_b) * (1.0 - (val - lo) / (hi - lo))
 
-    parts = [
+    svg_parts = [
         "<defs>"
-        '<linearGradient id="ns-sig-fill" x1="0" y1="0" x2="0" y2="1">'
-        '<stop offset="0" stop-color="#0B7A75" stop-opacity=".14"/>'
-        '<stop offset="1" stop-color="#0B7A75" stop-opacity="0"/></linearGradient></defs>'
+        '<linearGradient id="ns-eeg-grad" x1="0" y1="0" x2="0" y2="1">'
+        '<stop offset="0" stop-color="#0B7A75" stop-opacity="0.15"/>'
+        '<stop offset="1" stop-color="#0B7A75" stop-opacity="0"/>'
+        "</linearGradient></defs>"
     ]
 
     for k in range(5):
-        frac = k / 4
-        y = pt + (H - pt - pb) * frac
-        parts.append(f'<line x1="{pl}" y1="{y:.1f}" x2="{W - pr}" y2="{y:.1f}" class="grid"/>')
-        parts.append(
-            f'<text x="{pl - 8}" y="{y + 4:.1f}" text-anchor="end" class="axis">'
-            f"{hi - (hi - lo) * frac:.3g}</text>"
+        frac = k / 4.0
+        y_pos = pad_t + (height - pad_t - pad_b) * frac
+        tick_val = hi - (hi - lo) * frac
+        svg_parts.append(
+            f'<line x1="{pad_l}" y1="{y_pos:.1f}" x2="{width - pad_r}" y2="{y_pos:.1f}" class="grid"/>'
         )
+        svg_parts.append(
+            f'<text x="{pad_l - 8}" y="{y_pos + 4:.1f}" text-anchor="end" class="axis">'
+            f"{tick_val:.3g}</text>"
+        )
+
     for k in range(5):
-        frac = k / 4
-        x = pl + (W - pl - pr) * frac
-        parts.append(
-            f'<text x="{x:.1f}" y="{H - 20}" text-anchor="middle" class="axis">'
-            f"{start + round((n - 1) * frac)}</text>"
+        frac = k / 4.0
+        x_pos = pad_l + (width - pad_l - pad_r) * frac
+        sample_idx = start + round((n - 1) * frac)
+        svg_parts.append(
+            f'<text x="{x_pos:.1f}" y="{height - 20}" text-anchor="middle" class="axis">'
+            f"{sample_idx}</text>"
         )
-    parts.append(
-        f'<text x="{(pl + W - pr) / 2:.0f}" y="{H - 3}" text-anchor="middle" class="axis">Sample index</text>'
+
+    svg_parts.append(
+        f'<text x="{(pad_l + width - pad_r) / 2:.0f}" y="{height - 3}" '
+        'text-anchor="middle" class="axis">Sample index</text>'
     )
-    parts.append(
-        f'<text x="14" y="{(pt + H - pb) / 2:.0f}" text-anchor="middle" class="axis" '
-        f'transform="rotate(-90 14 {(pt + H - pb) / 2:.0f})">Amplitude</text>'
+    svg_parts.append(
+        f'<text x="14" y="{(pad_t + height - pad_b) / 2:.0f}" text-anchor="middle" '
+        f'class="axis" transform="rotate(-90 14 {(pad_t + height - pad_b) / 2:.0f})">Amplitude</text>'
     )
 
-    line_pts = " ".join(f"{px(i):.1f},{py(v):.1f}" for i, v in enumerate(seg))
-    parts.append(
-        f'<polygon points="{px(0):.1f},{H - pb} {line_pts} {px(n - 1):.1f},{H - pb}" fill="url(#ns-sig-fill)"/>'
+    line_coords = " ".join(f"{to_x(i):.1f},{to_y(v):.1f}" for i, v in enumerate(seg))
+    svg_parts.append(
+        f'<polygon points="{to_x(0):.1f},{height - pad_b} {line_coords} '
+        f'{to_x(n - 1):.1f},{height - pad_b}" fill="url(#ns-eeg-grad)"/>'
     )
-    parts.append(f'<polyline points="{line_pts}" class="trace"/>')
+    svg_parts.append(f'<polyline points="{line_coords}" class="trace"/>')
 
     if smoothed is not None:
-        sm = smoothed[start : end + 1]
-        sm_pts = " ".join(f"{px(i):.1f},{py(v):.1f}" for i, v in enumerate(sm))
-        parts.append(f'<polyline points="{sm_pts}" class="trace-smooth"/>')
+        sm_seg = smoothed[start : end + 1]
+        sm_coords = " ".join(f"{to_x(i):.1f},{to_y(v):.1f}" for i, v in enumerate(sm_seg))
+        svg_parts.append(f'<polyline points="{sm_coords}" class="trace-smooth"/>')
 
     for i, v in enumerate(seg):
-        parts.append(
-            f'<circle cx="{px(i):.1f}" cy="{py(v):.1f}" r="7" class="hit">'
+        svg_parts.append(
+            f'<circle cx="{to_x(i):.1f}" cy="{to_y(v):.1f}" r="6.5" class="hit">'
             f"<title>Sample {start + i}: {v:.5g}</title></circle>"
         )
 
     return (
-        f'<svg viewBox="0 0 {W} {H}" role="img" '
-        'aria-label="EEG signal plot. Hover over the line to read individual sample values.">'
-        + "".join(parts)
+        f'<svg viewBox="0 0 {width} {height}" role="img" '
+        'aria-label="EEG waveform plot across selected sample window">'
+        + "".join(svg_parts)
         + "</svg>"
     )
 
 
-# ---------- results ----------
-def show_risk(probability: float):
-    level, color, background = risk_level(probability)
-    percent = min(max(float(probability) * 100, 0), 100)
+def render_prob_bar(label: str, probability: float, highlight: bool = False) -> str:
+    pct = min(max(float(probability) * 100.0, 0.0), 100.0)
+    fill_cls = "ns-bar-fill top" if highlight else "ns-bar-fill"
+    return (
+        '<div class="ns-bar-row">'
+        f'<div class="ns-bar-head"><span>{html.escape(str(label))}</span>'
+        f"<span>{pct:.1f}%</span></div>"
+        f'<div class="ns-bar-track"><div class="{fill_cls}" style="width:{pct:.1f}%"></div></div>'
+        "</div>"
+    )
 
-    md(
+
+def render_score_card(final_risk: Any) -> None:
+    try:
+        prob = min(max(float(final_risk), 0.0), 1.0)
+    except (TypeError, ValueError):
+        st.warning("Screening score could not be parsed as a numeric value.")
+        return
+
+    pct = prob * 100.0
+    band, color, bg = classify_band(prob)
+
+    render_html(
         f"""
-        <div class="report">
-            <div class="report-label">Combined screening score</div>
-            <div class="report-score" style="color:{color}">{percent:.1f}%</div>
-            <span class="badge" style="background:{background}; color:{color}">{level} range</span>
-            <div class="scale" role="img" aria-label="Score {percent:.1f} percent on a scale from low to high">
-                <div class="seg low"></div><div class="seg mod"></div><div class="seg high"></div>
-                <div class="marker" style="left:{percent:.1f}%"></div>
+        <div class="ns-report">
+            <div class="ns-panel-hint" style="margin-bottom:0">Combined screening score</div>
+            <div class="ns-score" style="color:{color}">{pct:.1f}%</div>
+            <span class="ns-badge" style="background:{bg}; color:{color}">{band} display band</span>
+            <div class="ns-scale" role="img" aria-label="Score {pct:.1f}% on a 0 to 100 scale">
+                <div class="ns-seg-low"></div>
+                <div class="ns-seg-mod"></div>
+                <div class="ns-seg-high"></div>
+                <div class="ns-marker" style="left:{pct:.1f}%"></div>
             </div>
-            <div class="scale-ticks">
-                <span style="left:0%">0</span><span style="left:40%">40</span>
-                <span style="left:70%">70</span><span style="left:100%">100</span>
+            <div class="ns-ticks">
+                <span style="left:0%">0</span>
+                <span style="left:40%">40</span>
+                <span style="left:70%">70</span>
+                <span style="left:100%">100</span>
             </div>
-            <div class="band-note">
-                {BAND_NOTES[level]}
+            <div class="ns-note">
+                {html.escape(BAND_GUIDANCE[band])}
                 <small>
-                    Sudden severe headache, weakness on one side, confusion or a
-                    seizure needs emergency care. Do not wait for a screening result.
+                    Acute neurological symptoms (such as sudden severe headache, focal weakness,
+                    confusion, or seizure) require emergency medical care.
                 </small>
             </div>
         </div>
         """
     )
     st.caption(
-        "Ranges are display bands (below 40%, 40-70%, 70% and above), not clinical "
-        "thresholds. This score reflects the configured model output and is not a "
-        "validated estimate of clinical risk."
+        "Display bands (below 40%, 40–70%, 70% and above) are UI groupings only, "
+        "not validated clinical thresholds."
     )
 
 
-def show_eeg_result(eeg_result: dict):
-    probability = float(eeg_result["probability"])
+def render_eeg_card(eeg_data: dict[str, Any]) -> None:
     with st.container(border=True):
-        panel_head("EEG model", "Signal analysis")
-        md(
-            f"""
-            <div class="big-label">EEG anomaly probability</div>
-            <div class="big-value">{probability * 100:.1f}%</div>
-            {prob_bar("Model output", probability, highlight=True)}
-            """
+        render_html(
+            '<div class="ns-panel-title">EEG model output</div>'
+            '<div class="ns-panel-hint">1D signal anomaly estimation</div>'
         )
-
-
-def show_mri_result(mri_result: dict):
-    probabilities = mri_result.get("probs", {})
-    if isinstance(probabilities, dict):
-        pairs = list(probabilities.items())
-    else:
-        pairs = [(f"Class {i + 1}", p) for i, p in enumerate(probabilities)]
-
-    cleaned = []
-    for name, value in pairs:
+        raw_prob = eeg_data.get("probability")
         try:
-            cleaned.append((str(name), float(value)))
+            prob = min(max(float(raw_prob), 0.0), 1.0)
         except (TypeError, ValueError):
-            continue
-    cleaned.sort(key=lambda item: item[1], reverse=True)
+            st.info("EEG probability unavailable in response payload.")
+            return
 
+        render_html(
+            f'<div class="ns-panel-hint" style="margin-bottom:0">Estimated probability</div>'
+            f'<div class="ns-metric-big">{prob * 100:.1f}%</div>'
+            + render_prob_bar("EEG anomaly probability", prob, highlight=True)
+        )
+
+
+def render_mri_card(mri_data: dict[str, Any]) -> None:
     with st.container(border=True):
-        panel_head("MRI model", "Image classification")
-        bars = "".join(
-            prob_bar(name, value, highlight=(i == 0))
-            for i, (name, value) in enumerate(cleaned)
+        render_html(
+            '<div class="ns-panel-title">MRI model output</div>'
+            '<div class="ns-panel-hint">2D scan slice classification</div>'
         )
-        md(
-            f"""
-            <div class="big-label">Model label</div>
-            <div class="big-value">{html.escape(str(mri_result["label"]))}</div>
-            <div class="big-label" style="margin-top:10px">Class probabilities</div>
-            {bars}
-            """
+        label = str(mri_data.get("label", "Unknown"))
+        probs = mri_data.get("probs", {})
+        if isinstance(probs, dict):
+            entries = list(probs.items())
+        elif isinstance(probs, list):
+            entries = [(f"Class {idx + 1}", val) for idx, val in enumerate(probs)]
+        else:
+            entries = []
+
+        scored: list[tuple[str, float]] = []
+        for cls_name, val in entries:
+            try:
+                scored.append((str(cls_name), min(max(float(val), 0.0), 1.0)))
+            except (TypeError, ValueError):
+                continue
+        scored.sort(key=lambda item: item[1], reverse=True)
+
+        bars_html = "".join(
+            render_prob_bar(name, p, highlight=(idx == 0))
+            for idx, (name, p) in enumerate(scored)
+        )
+        render_html(
+            f'<div class="ns-panel-hint" style="margin-bottom:0">Predicted class</div>'
+            f'<div class="ns-metric-big">{html.escape(label)}</div>'
+            f'<div class="ns-panel-hint" style="margin-top:8px">Class distribution</div>'
+            f"{bars_html}"
         )
 
 
-def show_results(result: dict):
-    st.markdown("## Analysis results")
-    st.caption("Model output from the connected FastAPI backend.")
+def render_results(result: dict[str, Any]) -> None:
+    st.markdown("## Evaluation report")
+    st.caption("Output returned by POST /predict on the connected backend.")
 
-    left, right = st.columns([0.9, 1.1], gap="large")
+    col_summary, col_models = st.columns([0.92, 1.08], gap="large")
 
-    with left:
-        show_risk(float(result["final_risk"]))
-        if result.get("mode") == "fused":
-            fused_alpha = float(result["alpha"])
-            md(
-                f"""
-                <div class="chip-row">
-                    <span class="chip">Combined analysis: EEG {fused_alpha:.0%} / MRI {1 - fused_alpha:.0%}</span>
-                </div>
-                """
-            )
+    with col_summary:
+        render_score_card(result.get("final_risk"))
+        mode = result.get("mode")
+        if mode == "fused" and "alpha" in result:
+            try:
+                a = float(result["alpha"])
+                st.caption(f"Fusion mode active · EEG weight: {a:.0%} | MRI weight: {1.0 - a:.0%}")
+            except (TypeError, ValueError):
+                pass
+        elif mode:
+            st.caption(f"Execution mode: {mode}")
 
-    with right:
-        if "eeg" in result:
-            show_eeg_result(result["eeg"])
-        if "mri" in result:
-            show_mri_result(result["mri"])
+    with col_models:
+        if isinstance(result.get("eeg"), dict):
+            render_eeg_card(result["eeg"])
+        if isinstance(result.get("mri"), dict):
+            render_mri_card(result["mri"])
 
-    with st.expander("View raw API response"):
-        json_pre(result)
-
-    st.caption(
-        "Clinical interpretation requires qualified healthcare professionals "
-        "and appropriate validated diagnostic procedures."
+    serialized = json.dumps(result, indent=2, ensure_ascii=False)
+    st.download_button(
+        label="Download report (JSON)",
+        data=serialized.encode("utf-8"),
+        file_name="neurosense_prediction_report.json",
+        mime="application/json",
     )
 
+    with st.expander("Inspect raw JSON response"):
+        st.code(serialized, language="json")
+
 
 # =====================================================================
-# SIDEBAR
+# SIDEBAR CONTROLS
 # =====================================================================
+st.markdown(THEME_CSS, unsafe_allow_html=True)
+
 with st.sidebar:
-    st.markdown("### Analysis server")
-    backend_ok = st.session_state.get("backend_ok")
-    if backend_ok is True:
-        md('<div class="conn"><span class="dot ok"></span>Connected</div>')
-    elif backend_ok is False:
-        md('<div class="conn"><span class="dot bad"></span>Not reachable</div>')
+    st.markdown("### Backend configuration")
+    backend_url = st.text_input(
+        "FastAPI endpoint base URL",
+        value=DEFAULT_API_URL,
+        help="Set via NEUROSENSE_API environment variable or Streamlit secrets.",
+    ).strip().rstrip("/")
 
-    api_url = st.text_input("FastAPI backend URL", DEFAULT_API).rstrip("/")
+    col_ping, col_clear = st.columns(2)
+    with col_ping:
+        ping_clicked = st.button("Check health", use_container_width=True)
+    with col_clear:
+        if st.button("Reset session", use_container_width=True):
+            check_backend_health.clear()
+            st.session_state.pop("prediction_result", None)
+            st.rerun()
 
-    if st.button("Check connection", use_container_width=True):
-        try:
-            response = requests.get(f"{api_url}/health", timeout=5)
-            response.raise_for_status()
-            st.session_state["backend_ok"] = True
-            st.success("Backend is responding")
-            json_pre(response.json())
-        except requests.RequestException as exc:
-            st.session_state["backend_ok"] = False
-            st.error(f"Backend unavailable: {exc}")
-        except ValueError:
-            st.error("Backend returned invalid JSON.")
+    if ping_clicked:
+        check_backend_health.clear()
+
+    health = check_backend_health(backend_url)
+    dot_cls = "ok" if health.reachable else "bad"
+    status_txt = "Backend reachable" if health.reachable else "Backend unreachable"
+    render_html(
+        f'<div class="ns-conn"><span class="ns-dot {dot_cls}"></span>'
+        f"<span>{html.escape(status_txt)}</span></div>"
+    )
+    if health.reachable:
+        st.caption(health.detail)
+        if health.payload is not None:
+            with st.expander("Health payload"):
+                st.json(health.payload)
+    else:
+        st.caption("Ensure the FastAPI service is running and reachable.")
 
     st.divider()
-    st.markdown("### Combined analysis")
+    st.markdown("### Multimodal fusion")
     alpha = st.slider(
         "EEG fusion weight (α)",
-        0.0,
-        1.0,
-        0.5,
-        0.05,
-        help="Used only when both EEG and MRI files are supplied.",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.5,
+        step=0.05,
+        help="Applies when both EEG and MRI inputs are provided (MRI weight = 1 - α).",
     )
-    md(
+    render_html(
         f"""
-        <div class="split">
-            <div class="split-eeg" style="width:{alpha * 100:.0f}%"></div>
-            <div class="split-mri" style="width:{(1 - alpha) * 100:.0f}%"></div>
+        <div class="ns-split">
+            <div class="ns-split-eeg" style="width:{alpha * 100:.0f}%"></div>
+            <div class="ns-split-mri" style="width:{(1.0 - alpha) * 100:.0f}%"></div>
         </div>
-        <div class="split-legend"><span>EEG {alpha:.0%}</span><span>MRI {1 - alpha:.0%}</span></div>
+        <div class="ns-split-labels">
+            <span>EEG: {alpha:.0%}</span>
+            <span>MRI: {1.0 - alpha:.0%}</span>
+        </div>
         """
     )
 
     st.divider()
-    if st.button("Clear results", use_container_width=True):
-        st.session_state.pop("result", None)
-        st.rerun()
+    st.markdown("### Quick sample data")
+    st.caption("Download a synthetic 178-sample CSV to test the EEG pipeline.")
+    sample_mode = st.radio(
+        "Sample profile",
+        options=["Baseline waveform", "Elevated burst waveform"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    is_anomalous = sample_mode == "Elevated burst waveform"
+    st.download_button(
+        label="Download sample EEG (.csv)",
+        data=generate_sample_eeg_csv(seed=101 if is_anomalous else 42, anomalous=is_anomalous),
+        file_name="sample_eeg_burst_178.csv" if is_anomalous else "sample_eeg_baseline_178.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
 
 # =====================================================================
-# HEADER + DISCLAIMER (always visible)
+# HEADER & DISCLAIMER
 # =====================================================================
-md(
+render_html(
     f"""
-    <div class="topbar">
-        <div class="brand">
-            <div class="brand-mark">{HEART_ICON}</div>
+    <div class="ns-topbar">
+        <div class="ns-brand">
+            <div class="ns-mark">{PULSE_SVG}</div>
             <div>
-                <div class="brand-name">NeuroSense</div>
-                <div class="brand-sub">EEG and MRI analysis workspace</div>
+                <div class="ns-title">NeuroSense</div>
+                <div class="ns-subtitle">Multimodal EEG &amp; MRI Research Workspace</div>
             </div>
         </div>
-        <div class="pill">Research prototype</div>
+        <div class="ns-pill">Capstone Research Build</div>
     </div>
-    <p class="intro">
-        Upload an EEG recording, an MRI image, or both. NeuroSense runs experimental
-        machine-learning models and shows each output with its limits.
-    </p>
-    """
-)
-
-md(
-    """
-    <div class="disclaimer">
-        <b>Medical disclaimer.</b> NeuroSense is an experimental research
-        prototype. Its outputs are not clinical diagnoses and must not be
-        used to diagnose, rule out or treat any medical condition. Always
-        consult a qualified healthcare professional.
+    <div class="ns-disclaimer">
+        <strong>Research &amp; Educational Notice:</strong> NeuroSense is a non-clinical
+        prototype developed for research and engineering evaluation. Model outputs are not
+        medical diagnoses and must not be used for clinical decision-making.
     </div>
     """
 )
 
+
 # =====================================================================
-# NAVIGATION
+# MAIN WORKSPACE TABS
 # =====================================================================
-tab_analyze, tab_how, tab_safety = st.tabs(
-    ["Analysis", "How it works", "Safety and limits"]
+tab_analysis, tab_architecture, tab_limitations = st.tabs(
+    ["Analysis workspace", "System & methodology", "Limitations & ethics"]
 )
 
-# ---------------------------------------------------------------------
-# ANALYSIS
-# ---------------------------------------------------------------------
-with tab_analyze:
-    st.markdown("## Upload patient data")
-    st.caption("Upload one modality, or provide both for a combined analysis.")
+with tab_analysis:
+    st.markdown("## Modality inputs")
+    st.caption("Provide an EEG file, an MRI slice image, or both for fused inference.")
 
     col_eeg, col_mri = st.columns(2, gap="large")
 
-    eeg_bytes = None
-    mri_bytes = None
-    eeg_file = None
-    mri_file = None
-    eeg_values = None
-    eeg_ok = True
-    eeg_state = ("Waiting for file", "idle")
-    mri_state = ("Waiting for file", "idle")
+    eeg_bytes: bytes | None = None
+    eeg_values: list[float] | None = None
+    eeg_valid = True
+    eeg_status = ("Awaiting file", "idle")
+
+    mri_bytes: bytes | None = None
+    mri_status = ("Awaiting file", "idle")
 
     with col_eeg:
         with st.container(border=True):
-            panel_head(
-                "EEG recording",
-                f"CSV or TXT file with exactly {EEG_LEN} numeric values.",
+            render_html(
+                f'<div class="ns-panel-title">EEG recording</div>'
+                f'<div class="ns-panel-hint">CSV or TXT containing exactly {EEG_LEN} numeric samples</div>'
             )
             eeg_file = st.file_uploader(
-                "Choose EEG file",
+                "Upload EEG recording",
                 type=["csv", "txt"],
-                key="eeg",
+                key="eeg_uploader",
                 label_visibility="collapsed",
             )
-
             if eeg_file is not None:
                 eeg_bytes = eeg_file.getvalue()
-                eeg_values = parse_eeg(eeg_bytes)
-
-                if eeg_values is None or len(eeg_values) != EEG_LEN:
-                    count = 0 if eeg_values is None else len(eeg_values)
-                    st.error(f"Expected {EEG_LEN} numeric values; found {count}.")
-                    eeg_ok = False
-                    eeg_values = None
-                    eeg_state = ("Needs attention", "bad")
+                parsed_eeg = parse_eeg_bytes(eeg_bytes)
+                if parsed_eeg is None or len(parsed_eeg) != EEG_LEN:
+                    found = 0 if parsed_eeg is None else len(parsed_eeg)
+                    st.error(f"Invalid EEG input: expected {EEG_LEN} finite numbers, found {found}.")
+                    eeg_valid = False
+                    eeg_status = ("Validation failed", "bad")
                 else:
-                    st.success(f"{len(eeg_values)} numeric values loaded")
-                    eeg_state = ("Ready", "ok")
+                    eeg_values = parsed_eeg
+                    eeg_status = ("Validated (178 samples)", "ok")
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Samples", len(eeg_values))
+                    m2.metric("Min", f"{min(eeg_values):.3g}")
+                    m3.metric("Max", f"{max(eeg_values):.3g}")
+
+            s_label, s_tone = eeg_status
+            render_html(
+                f'<div class="ns-status"><div class="ns-status-k">EEG status</div>'
+                f'<div class="ns-status-v ns-tone-{s_tone}">{html.escape(s_label)}</div></div>'
+            )
 
     with col_mri:
         with st.container(border=True):
-            panel_head(
-                "MRI scan",
-                "JPG or PNG brain image for model inference.",
+            render_html(
+                '<div class="ns-panel-title">MRI scan image</div>'
+                '<div class="ns-panel-hint">PNG, JPG, or JPEG axial/sagittal/coronal slice</div>'
             )
             mri_file = st.file_uploader(
-                "Choose MRI image",
-                type=["jpg", "jpeg", "png"],
-                key="mri",
+                "Upload MRI scan image",
+                type=["png", "jpg", "jpeg"],
+                key="mri_uploader",
                 label_visibility="collapsed",
             )
-
             if mri_file is not None:
                 mri_bytes = mri_file.getvalue()
+                mri_status = ("Loaded image", "ok")
                 st.image(
-                    mri_bytes,
-                    caption="Uploaded image",
+                    io.BytesIO(mri_bytes),
+                    caption=f"{mri_file.name} ({len(mri_bytes) / 1024:.1f} KB)",
                     use_container_width=True,
                 )
-                details = [mri_file.name, f"{len(mri_bytes) / 1024:.0f} KB"]
-                try:
-                    from PIL import Image
 
-                    width, height = Image.open(io.BytesIO(mri_bytes)).size
-                    details.insert(1, f"{width}×{height} px")
-                except Exception:  # preview details are optional
-                    pass
-                chips = "".join(
-                    f'<span class="chip">{html.escape(d)}</span>' for d in details
-                )
-                md(f'<div class="chip-row">{chips}</div>')
-                mri_state = ("Ready", "ok")
+            s_label, s_tone = mri_status
+            render_html(
+                f'<div class="ns-status"><div class="ns-status-k">MRI status</div>'
+                f'<div class="ns-status-v ns-tone-{s_tone}">{html.escape(s_label)}</div></div>'
+            )
 
-    # ---------- interactive EEG viewer ----------
     if eeg_values is not None:
-        st.write("")
+        st.markdown("### Waveform inspection")
         with st.container(border=True):
-            panel_head(
-                "Signal viewer",
-                "Zoom into a range of samples and hover over the line to read exact values.",
+            render_html(
+                '<div class="ns-panel-title">Interactive EEG signal viewer</div>'
+                '<div class="ns-panel-hint">Inspect sample ranges and optional moving-average smoothing</div>'
             )
+            c1, c2, c3 = st.columns([1.3, 1.3, 1.2], gap="medium")
+            with c1:
+                idx_start = st.slider("Start sample", 0, EEG_LEN - 10, 0)
+            with c2:
+                idx_end = st.slider("End sample", idx_start + 9, EEG_LEN - 1, EEG_LEN - 1)
+            with c3:
+                smooth_win = st.select_slider("Smoothing window", options=[1, 3, 5, 9, 15], value=1)
 
-            ctl1, ctl2, ctl3 = st.columns([2.2, 1, 1.2], gap="medium")
-            with ctl1:
-                sample_range = st.slider(
-                    "Sample range",
-                    0,
-                    EEG_LEN - 1,
-                    (0, EEG_LEN - 1),
-                    key="eeg_range",
+            smoothed = smooth_values(eeg_values, smooth_win) if smooth_win > 1 else None
+            legend = '<div class="ns-legend"><span><i style="background:#0B7A75"></i>Raw signal</span>'
+            if smoothed is not None:
+                legend += '<span><i style="background:#1D4ED8"></i>Moving average</span>'
+            legend += "</div>"
+            render_html(legend)
+
+            svg_markup = build_eeg_svg(eeg_values, idx_start, idx_end, smoothed)
+            render_html(f'<div class="ns-svg-wrap">{svg_markup}</div>')
+
+            with st.expander("View sample table"):
+                df_samples = pd.DataFrame(
+                    {
+                        "sample_index": np.arange(EEG_LEN),
+                        "amplitude": eeg_values,
+                    }
                 )
-            with ctl2:
-                show_smooth = st.checkbox("Show smoothed trace", key="eeg_smooth")
-            with ctl3:
-                smooth_window = st.select_slider(
-                    "Smoothing window",
-                    options=[3, 5, 9, 15, 21],
-                    value=5,
-                    key="eeg_window",
-                    disabled=not show_smooth,
-                )
+                st.dataframe(df_samples, use_container_width=True, hide_index=True)
 
-            start, end = sample_range
-            if end - start < 4:  # keep at least 5 samples visible
-                end = min(start + 4, EEG_LEN - 1)
-                start = max(end - 4, 0)
-
-            segment = eeg_values[start : end + 1]
-            smoothed = None
-            if show_smooth:
-                smoothed = (
-                    pd.Series(eeg_values)
-                    .rolling(smooth_window, center=True, min_periods=1)
-                    .mean()
-                    .tolist()
-                )
-
-            stat_row(
-                [
-                    ("Samples shown", str(len(segment))),
-                    ("Minimum", f"{min(segment):.4g}"),
-                    ("Maximum", f"{max(segment):.4g}"),
-                    ("Mean", f"{sum(segment) / len(segment):.4g}"),
-                ]
-            )
-
-            legend = '<span><i style="background:#0B7A75"></i>Raw signal</span>'
-            if show_smooth:
-                legend += (
-                    f'<span><i style="background:#1D4ED8"></i>Moving average ({smooth_window})</span>'
-                )
-            md(
-                f"""
-                <div class="viewer">
-                    <div class="legend">{legend}</div>
-                    {signal_svg(eeg_values, start, end, smoothed)}
-                </div>
-                """
-            )
-
-    # ---------- selected mode + status ----------
-    if eeg_bytes is not None and mri_bytes is not None:
-        mode = "EEG + MRI combined"
-    elif eeg_bytes is not None:
-        mode = "EEG only"
-    elif mri_bytes is not None:
-        mode = "MRI only"
-    else:
-        mode = None
+    has_input = (eeg_values is not None) or (mri_bytes is not None)
+    ready_to_run = eeg_valid and has_input
 
     st.write("")
-    t1, t2, t3 = st.columns(3, gap="medium")
-    with t1:
-        status_tile("EEG file", *eeg_state)
-    with t2:
-        status_tile("MRI image", *mri_state)
-    with t3:
-        status_tile(
-            "Analysis mode",
-            mode or "Upload a file to begin",
-            "info" if mode else "idle",
-        )
-
-    # ---------- analysis ----------
-    st.write("")
-    run = st.button(
-        "Run analysis",
+    run_btn = st.button(
+        "Run multimodal inference",
         type="primary",
+        disabled=not ready_to_run,
         use_container_width=True,
-        disabled=(mode is None or not eeg_ok),
     )
 
-    if run:
-        st.session_state.pop("result", None)  # never show a stale result
-        files = {}
+    if not has_input:
+        st.caption("Upload at least one valid modality file to run inference.")
 
-        if eeg_bytes is not None:
-            files["eeg"] = (
-                eeg_file.name,
-                eeg_bytes,
-                "text/csv",
-            )
+    if run_btn and ready_to_run:
+        eeg_tuple = (eeg_file.name, eeg_bytes) if (eeg_values is not None and eeg_file and eeg_bytes) else None
+        mri_tuple = (
+            (mri_file.name, mri_bytes, mri_file.type or "image/png")
+            if (mri_bytes is not None and mri_file)
+            else None
+        )
 
-        if mri_bytes is not None:
-            files["mri"] = (
-                mri_file.name,
-                mri_bytes,
-                mri_file.type,
-            )
+        with st.spinner("Sending inputs to FastAPI backend..."):
+            ok, payload = request_prediction(backend_url, eeg_tuple, mri_tuple, alpha)
 
-        try:
-            with st.spinner("Analysing your uploaded data..."):
-                response = requests.post(
-                    f"{api_url}/predict",
-                    files=files,
-                    data={"alpha": alpha},
-                    timeout=60,
-                )
-
-            if response.status_code != 200:
-                try:
-                    detail = response.json().get("detail", response.text)
-                except ValueError:
-                    detail = response.text
-                st.error(f"Analysis failed: {detail}")
-            else:
-                try:
-                    st.session_state["result"] = response.json()
-                except ValueError:
-                    st.error("Backend returned invalid JSON.")
-
-        except requests.RequestException as exc:
-            st.error(
-                f"Could not reach the backend at {api_url}. "
-                f"Check the address in the sidebar. Details: {exc}"
-            )
-
-    # ---------- results ----------
-    result = st.session_state.get("result")
-    if result:
-        st.divider()
-        if "final_risk" not in result:
-            st.error("The backend response did not include a combined score.")
-            with st.expander("View raw API response"):
-                json_pre(result)
+        if ok and isinstance(payload, dict):
+            st.session_state["prediction_result"] = payload
         else:
-            show_results(result)
+            st.error(str(payload))
 
-# ---------------------------------------------------------------------
-# HOW IT WORKS
-# ---------------------------------------------------------------------
-with tab_how:
-    st.markdown("## How NeuroSense works")
-    st.caption("From upload to results in three steps.")
+    if "prediction_result" in st.session_state:
+        st.divider()
+        render_results(st.session_state["prediction_result"])
 
-    s1, s2, s3 = st.columns(3, gap="medium")
-    with s1:
-        md(
-            f"""
-            <div class="info">
-                <div class="step-no">1</div>
-                <h4>Upload</h4>
-                <p>Add an EEG file with exactly {EEG_LEN} numeric values, an MRI image
-                (JPG or PNG), or both.</p>
+
+with tab_architecture:
+    st.markdown("## System & methodology")
+    st.caption("Overview of client-side validation, backend inference contract, and fusion weighting.")
+
+    c1, c2, c3 = st.columns(3, gap="large")
+    with c1:
+        render_html(
+            """
+            <div class="ns-card">
+                <div class="ns-step">1</div>
+                <h4>Client-side pre-validation</h4>
+                <p>
+                    Verifies finite floating-point samples and exact 178-point length
+                    for EEG files prior to network upload, reducing malformed requests.
+                </p>
             </div>
             """
         )
-    with s2:
-        md(
+    with c2:
+        render_html(
             """
-            <div class="info">
-                <div class="step-no">2</div>
-                <h4>Analyse</h4>
-                <p>Your files are sent to the FastAPI backend set in the sidebar.
-                The models run there and return their outputs.</p>
+            <div class="ns-card">
+                <div class="ns-step">2</div>
+                <h4>FastAPI inference contract</h4>
+                <p>
+                    Submits multipart inputs to <code>POST /predict</code> with fusion
+                    parameter <code>alpha</code> and monitors service readiness via
+                    <code>GET /health</code>.
+                </p>
             </div>
             """
         )
-    with s3:
-        md(
+    with c3:
+        render_html(
             """
-            <div class="info">
-                <div class="step-no">3</div>
-                <h4>Review</h4>
-                <p>See each model's output. When both inputs are supplied, a combined
-                score is weighted by the fusion setting in the sidebar.</p>
+            <div class="ns-card">
+                <div class="ns-step">3</div>
+                <h4>Transparent reporting</h4>
+                <p>
+                    Presents combined scores alongside individual EEG and MRI outputs,
+                    downloadable JSON reports, and full raw payloads.
+                </p>
             </div>
             """
         )
 
-    st.write("")
-    i1, i2 = st.columns(2, gap="medium")
-    with i1:
-        md(
-            f"""
-            <div class="info">
-                <h4>Accepted inputs</h4>
+
+with tab_limitations:
+    st.markdown("## Limitations & ethics")
+    st.caption("Key technical boundaries and responsible-use guardrails for this prototype.")
+
+    left, right = st.columns(2, gap="large")
+    with left:
+        render_html(
+            """
+            <div class="ns-card">
+                <h4>Technical boundaries</h4>
                 <ul>
-                    <li><b>EEG:</b> CSV or TXT, {EEG_LEN} numbers separated by commas,
-                    semicolons or whitespace.</li>
-                    <li><b>MRI:</b> a JPG, JPEG or PNG image.</li>
-                    <li><b>Modes:</b> EEG only, MRI only, or both together.</li>
+                    <li>Display bands (0–40%, 40–70%, 70–100%) are arbitrary visual ranges, not calibrated medical cutoffs.</li>
+                    <li>Single-modality and fused outputs depend on backend model weights, calibration, and input domain shift.</li>
+                    <li>EEG windowing expects fixed-length 178-sample segments formatted consistently with training data.</li>
                 </ul>
             </div>
             """
         )
-    with i2:
-        md(
+    with right:
+        render_html(
             """
-            <div class="info">
-                <h4>What you get back</h4>
+            <div class="ns-card">
+                <h4>Ethical &amp; clinical guardrails</h4>
                 <ul>
-                    <li><b>EEG model:</b> an anomaly probability.</li>
-                    <li><b>MRI model:</b> a predicted label with a probability for each class.</li>
-                    <li><b>Combined score:</b> one screening score, shown in a Low,
-                    Moderate or High display range.</li>
+                    <li>Not a medical device and not approved for clinical diagnosis, screening, or treatment planning.</li>
+                    <li>Avoid uploading identifiable patient metadata or PHI unless governed by approved research protocols.</li>
+                    <li>Always consult licensed clinicians for medical evaluation and emergency care.</li>
                 </ul>
             </div>
             """
         )
 
-    st.write("")
-    md(
-        """
-        <div class="info">
-            <h4>Data flow</h4>
-            <div class="flow">
-                <span>Your browser</span><em>→</em>
-                <span>Streamlit dashboard</span><em>→</em>
-                <span>POST /predict</span><em>→</em>
-                <span>FastAPI backend and models</span><em>→</em>
-                <span>JSON results</span>
-            </div>
-        </div>
-        """
+    render_html(
+        '<div class="ns-footer">NeuroSense · Multimodal EEG &amp; MRI Research Prototype</div>'
     )
-
-# ---------------------------------------------------------------------
-# SAFETY
-# ---------------------------------------------------------------------
-with tab_safety:
-    st.markdown("## Safety and limits")
-    st.caption("Please read this before interpreting any result.")
-
-    a1, a2 = st.columns(2, gap="medium")
-    with a1:
-        md(
-            """
-            <div class="info">
-                <h4>What this is</h4>
-                <ul>
-                    <li>An experimental research prototype for exploring model outputs.</li>
-                    <li>A way to visualise EEG signals and image-classification results.</li>
-                </ul>
-            </div>
-            """
-        )
-    with a2:
-        md(
-            """
-            <div class="info">
-                <h4>What this is not</h4>
-                <ul>
-                    <li>Not a medical device and not a diagnostic tool.</li>
-                    <li>Not validated for clinical use. Scores can be wrong.</li>
-                    <li>Not a replacement for a qualified healthcare professional.</li>
-                </ul>
-            </div>
-            """
-        )
-
-    st.write("")
-    b1, b2 = st.columns(2, gap="medium")
-    with b1:
-        md(
-            """
-            <div class="info">
-                <h4>Your data</h4>
-                <ul>
-                    <li>Uploaded files are sent only to the backend URL set in the sidebar.</li>
-                    <li>Avoid uploading identifiable patient data to a backend you do not control.</li>
-                </ul>
-            </div>
-            """
-        )
-    with b2:
-        md(
-            """
-            <div class="info">
-                <h4>When to seek care</h4>
-                <ul>
-                    <li>Sudden severe headache, weakness on one side, confusion, trouble
-                    speaking or a seizure needs emergency care right away.</li>
-                    <li>For any ongoing symptoms or concerns, talk to a clinician.</li>
-                </ul>
-            </div>
-            """
-        )
-
-# =====================================================================
-# FOOTER
-# =====================================================================
-md(
-    """
-    <div class="footer">
-        NeuroSense - AI-assisted neurological research prototype - Not for clinical use<br>
-        Built with Streamlit, FastAPI and machine learning
-    </div>
-    """
-)

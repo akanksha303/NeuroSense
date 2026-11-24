@@ -1,9 +1,7 @@
-
 import os
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import requests
 import streamlit as st
 
@@ -13,6 +11,7 @@ import streamlit as st
 # =========================================================
 
 EEG_LEN = 178
+DEFAULT_API = os.getenv("NEUROSENSE_API", "http://localhost:8000")
 
 
 st.set_page_config(
@@ -137,33 +136,16 @@ def parse_eeg(raw: bytes):
         )
 
 
-def build_signal_chart(values):
-    """Create a visualization of the uploaded EEG values."""
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Scatter(
-            x=list(range(1, len(values) + 1)),
-            y=values,
-            mode="lines",
-            name="EEG signal",
-            line=dict(color="#168A8A", width=1.8),
-        )
+def build_signal_series(values: np.ndarray) -> pd.Series:
+    """Create a 1-indexed series of EEG signal values for Streamlit charts."""
+    return pd.Series(
+        values,
+        index=np.arange(1, len(values) + 1),
+        name="EEG signal",
     )
 
-    fig.update_layout(
-        height=300,
-        margin=dict(l=15, r=15, t=25, b=15),
-        xaxis_title="Sample index",
-        yaxis_title="Signal value",
-        template="plotly_white",
-        showlegend=False,
-    )
 
-    return fig
-
-
-def call_health_endpoint(api_url):
+def call_health_endpoint(api_url: str) -> dict:
     """Check whether the deployed FastAPI backend is reachable."""
     response = requests.get(
         f"{api_url}/health",
@@ -179,7 +161,7 @@ def call_health_endpoint(api_url):
     return data
 
 
-def call_prediction_endpoint(api_url, file_name, eeg_bytes):
+def call_prediction_endpoint(api_url: str, file_name: str, eeg_bytes: bytes) -> dict:
     """Send EEG data using the field expected by FastAPI."""
     response = requests.post(
         f"{api_url}/predict",
@@ -215,7 +197,7 @@ def call_prediction_endpoint(api_url, file_name, eeg_bytes):
 
     probability = float(result["anomaly_probability"])
 
-    if not np.isfinite(probability) or not 0 <= probability <= 1:
+    if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
         raise ValueError(
             "The backend returned an invalid anomaly probability."
         )
@@ -356,7 +338,6 @@ if uploaded_file is not None:
         hash(eeg_bytes),
     )
 
-    # Clear a result if the uploaded file has changed.
     if file_signature != st.session_state["input_signature"]:
         st.session_state["result"] = None
         st.session_state["input_signature"] = file_signature
@@ -371,8 +352,9 @@ if uploaded_file is not None:
         )
 
         with st.expander("Preview EEG signal", expanded=True):
-            st.plotly_chart(
-                build_signal_chart(eeg_values),
+            st.line_chart(
+                build_signal_series(eeg_values),
+                height=300,
                 use_container_width=True,
             )
 
@@ -528,4 +510,3 @@ st.caption(
     "NeuroSense | EEG machine-learning research prototype | "
     "Predictions require appropriate validation and clinical context."
 )
-
