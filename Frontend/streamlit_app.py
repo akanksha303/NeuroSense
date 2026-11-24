@@ -4,7 +4,8 @@ Run:
     streamlit run Frontend/streamlit_app.py
 
 Environment / Secrets:
-    NEUROSENSE_API: Base URL for the FastAPI backend (default: http://localhost:8000)
+    NEUROSENSE_API: Base URL for the FastAPI backend
+                    (default: https://neurosense-roir.onrender.com)
 """
 
 from __future__ import annotations
@@ -23,12 +24,13 @@ import requests
 import streamlit as st
 
 EEG_LEN = 178
-DEFAULT_TIMEOUT_HEALTH = 5.0
-DEFAULT_TIMEOUT_PREDICT = 45.0
+DEFAULT_TIMEOUT_HEALTH = 6.0
+DEFAULT_TIMEOUT_PREDICT = 60.0
+FALLBACK_RENDER_URL = "https://neurosense-roir.onrender.com"
 
 st.set_page_config(
     page_title="NeuroSense | Multimodal EEG & MRI Workspace",
-    page_icon="🩺",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -38,67 +40,75 @@ st.set_page_config(
 # CONFIGURATION & STYLING
 # =====================================================================
 def resolve_backend_url() -> str:
-    """Resolve backend URL from st.secrets, environment variable, or localhost."""
+    """Silently resolve backend URL from st.secrets, env var, or Render default."""
     try:
         if "NEUROSENSE_API" in st.secrets and st.secrets["NEUROSENSE_API"]:
             return str(st.secrets["NEUROSENSE_API"]).strip().rstrip("/")
     except Exception:
         pass
-    return os.getenv("NEUROSENSE_API", "http://localhost:8000").strip().rstrip("/")
+    return os.getenv("NEUROSENSE_API", FALLBACK_RENDER_URL).strip().rstrip("/")
 
 
-DEFAULT_API_URL = resolve_backend_url()
+BACKEND_API_URL = resolve_backend_url()
 
 THEME_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 
 :root {
-    --bg: #F3F6F8;
+    --bg: #F4F7FA;
     --surface: #FFFFFF;
-    --surface-subtle: #F7F9FB;
-    --ink: #102A3C;
-    --muted: #526778;
-    --faint: #7E90A0;
-    --line: #D8E1E8;
-    --teal: #0B7A75;
-    --teal-dark: #095F5B;
-    --teal-soft: #E3F2F1;
-    --ok: #256F4F;
-    --ok-soft: #E4F3EB;
-    --warn: #A66300;
-    --warn-soft: #FDF1DC;
-    --alert: #B03535;
-    --alert-soft: #FBE7E7;
-    --radius: 10px;
+    --surface-subtle: #F8FAFC;
+    --ink: #0F172A;
+    --muted: #334155;
+    --faint: #64748B;
+    --line: #CBD5E1;
+    --teal: #0F766E;
+    --teal-dark: #115E59;
+    --teal-soft: #CCFBF1;
+    --blue: #2563EB;
+    --blue-dark: #1D4ED8;
+    --blue-soft: #DBEAFE;
+    --ok: #059669;
+    --ok-soft: #ECFDF5;
+    --warn: #D97706;
+    --warn-soft: #FFFBEB;
+    --alert: #DC2626;
+    --alert-soft: #FEF2F2;
+    --radius: 12px;
 }
 
 .stApp {
     background: var(--bg);
     color: var(--ink);
-    font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
 }
 
 .block-container {
-    padding-top: 1.5rem;
+    padding-top: 1.4rem;
     padding-bottom: 2.5rem;
-    max-width: 1180px;
+    max-width: 1200px;
 }
 
 [data-testid="stHeader"] {
-    background: rgba(243, 246, 248, 0.88);
-    backdrop-filter: blur(6px);
+    background: rgba(244, 247, 250, 0.85);
+    backdrop-filter: blur(8px);
+}
+
+/* Force crisp, high-contrast typography across Streamlit widgets */
+.stApp p, .stApp label, .stApp span, .stMarkdown {
+    color: var(--ink);
 }
 
 .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
-    font-family: 'IBM Plex Sans', system-ui, sans-serif !important;
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif !important;
     color: var(--ink) !important;
-    font-weight: 600 !important;
-    letter-spacing: -0.01em;
+    font-weight: 700 !important;
+    letter-spacing: -0.015em;
 }
 
-.stApp h2 { font-size: 1.42rem !important; }
-.stApp h3 { font-size: 1.15rem !important; }
+.stApp h2 { font-size: 1.38rem !important; margin-bottom: 0.2rem !important; }
+.stApp h3 { font-size: 1.12rem !important; }
 
 [data-testid="stSidebar"] {
     background: var(--surface);
@@ -109,18 +119,35 @@ THEME_CSS = """
     background: var(--surface);
     border: 1px solid var(--line) !important;
     border-radius: var(--radius) !important;
+    box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+}
+
+/* Color-coded modality cards in the 2-column upload grid */
+div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:nth-of-type(1) [data-testid="stVerticalBlockBorderWrapper"] {
+    border-top: 4px solid var(--teal) !important;
+}
+
+div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:nth-of-type(2) [data-testid="stVerticalBlockBorderWrapper"] {
+    border-top: 4px solid var(--blue) !important;
 }
 
 [data-testid="stFileUploader"] section {
     background: var(--surface-subtle);
-    border: 1.5px dashed #9FB4C3;
-    border-radius: 8px;
+    border: 1.5px dashed #94A3B8;
+    border-radius: 10px;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+[data-testid="stFileUploader"] section:hover {
+    border-color: var(--teal);
+    background: #F0FDFA;
 }
 
 [data-testid="stFileUploader"] button {
     background: var(--surface) !important;
-    border: 1px solid var(--teal) !important;
+    border: 1.5px solid var(--teal) !important;
     color: var(--teal-dark) !important;
+    font-weight: 600 !important;
     border-radius: 8px !important;
 }
 
@@ -128,159 +155,257 @@ THEME_CSS = """
     background: var(--teal-soft) !important;
 }
 
+/* Secondary buttons (sidebar / download) */
+.stButton > button:not([kind="primary"]),
+.stDownloadButton > button {
+    background: var(--surface) !important;
+    color: var(--ink) !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    transition: all 0.15s ease;
+}
+
+.stButton > button:not([kind="primary"]):hover,
+.stDownloadButton > button:hover {
+    border-color: var(--teal) !important;
+    color: var(--teal-dark) !important;
+    background: #F0FDFA !important;
+}
+
+/* Primary Run Inference CTA button */
 .stButton > button[kind="primary"],
 button[data-testid="stBaseButton-primary"] {
-    background: var(--teal);
-    color: #FFFFFF;
-    border: none;
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 0.98rem;
-    min-height: 48px;
+    background: linear-gradient(90deg, var(--teal) 0%, var(--blue) 100%) !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    border-radius: 10px !important;
+    font-weight: 700 !important;
+    font-size: 1rem !important;
+    min-height: 50px;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.stButton > button[kind="primary"] p,
+button[data-testid="stBaseButton-primary"] p {
+    color: #FFFFFF !important;
 }
 
 .stButton > button[kind="primary"]:hover:not(:disabled),
 button[data-testid="stBaseButton-primary"]:hover:not(:disabled) {
-    background: var(--teal-dark);
-    color: #FFFFFF;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
 }
 
 .stButton > button[kind="primary"]:disabled,
 button[data-testid="stBaseButton-primary"]:disabled {
-    background: #E2E8EE;
-    color: var(--faint);
+    background: #CBD5E1 !important;
+    color: #64748B !important;
+    box-shadow: none !important;
 }
 
+/* Tabs */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 6px;
-    border-bottom: 1px solid var(--line);
+    gap: 8px;
+    border-bottom: 2px solid #E2E8F0;
+    margin-bottom: 12px;
 }
 
 .stTabs [data-baseweb="tab"] {
     height: 44px;
     padding: 0 18px;
-    font-weight: 500;
-    color: var(--muted);
+    font-weight: 600;
+    color: var(--muted) !important;
+    border-radius: 8px 8px 0 0;
+}
+
+.stTabs [data-baseweb="tab"] p {
+    color: var(--muted) !important;
+    font-weight: 600 !important;
 }
 
 .stTabs [aria-selected="true"] {
+    background: #EFF6FF;
+}
+
+.stTabs [aria-selected="true"] p {
     color: var(--teal-dark) !important;
-    font-weight: 600;
+    font-weight: 700 !important;
 }
 
 .stTabs [data-baseweb="tab-highlight"] {
-    background: var(--teal) !important;
+    background: linear-gradient(90deg, var(--teal), var(--blue)) !important;
     height: 3px;
 }
 
 .stTabs [data-baseweb="tab-border"] { display: none; }
 
-.ns-topbar {
+/* Hero Banner */
+.ns-hero {
+    background: linear-gradient(135deg, #0F766E 0%, #115E59 48%, #1E40AF 100%);
+    border-radius: 14px;
+    padding: 20px 24px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
     flex-wrap: wrap;
-    padding-bottom: 16px;
-    border-bottom: 1px solid var(--line);
     margin-bottom: 14px;
+    box-shadow: 0 6px 20px rgba(15, 118, 110, 0.18);
 }
 
-.ns-brand { display: flex; align-items: center; gap: 12px; }
+.ns-brand { display: flex; align-items: center; gap: 14px; }
 
 .ns-mark {
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
-    background: var(--teal);
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.16);
+    border: 1px solid rgba(255, 255, 255, 0.28);
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
-.ns-mark svg { width: 22px; height: 22px; }
-.ns-title { font-size: 1.35rem; font-weight: 700; color: var(--ink); line-height: 1.15; }
-.ns-subtitle { font-size: 0.85rem; color: var(--muted); }
+.ns-mark svg { width: 24px; height: 24px; }
+.ns-title { font-size: 1.45rem; font-weight: 700; color: #FFFFFF !important; line-height: 1.15; }
+.ns-subtitle { font-size: 0.88rem; color: #E0F2FE !important; margin-top: 2px; }
 
 .ns-pill {
-    background: var(--teal-soft);
-    color: var(--teal-dark);
-    border: 1px solid #BFE0DD;
+    background: rgba(255, 255, 255, 0.18);
+    color: #FFFFFF !important;
+    border: 1px solid rgba(255, 255, 255, 0.35);
     border-radius: 999px;
-    padding: 5px 14px;
-    font-size: 0.8rem;
+    padding: 6px 15px;
+    font-size: 0.82rem;
     font-weight: 600;
+    backdrop-filter: blur(4px);
 }
 
+/* Research Disclaimer */
 .ns-disclaimer {
     background: var(--warn-soft);
-    border: 1px solid #F0D9A8;
+    border: 1px solid #FDE68A;
     border-left: 4px solid var(--warn);
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 12px 16px;
-    color: #5C3B00;
+    color: #78350F !important;
     font-size: 0.88rem;
     line-height: 1.55;
     margin-bottom: 18px;
 }
 
-.ns-conn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.88rem;
-    font-weight: 500;
+.ns-disclaimer strong { color: #78350F !important; }
+
+/* Sidebar Engine Status Card */
+.ns-engine-card {
+    border-radius: 10px;
+    padding: 12px 14px;
     margin-bottom: 10px;
 }
 
-.ns-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-.ns-dot.ok { background: var(--ok); }
-.ns-dot.bad { background: var(--alert); }
-.ns-dot.unknown { background: var(--faint); }
-
-.ns-split {
-    display: flex;
-    height: 8px;
-    border-radius: 999px;
-    overflow: hidden;
-    background: var(--line);
-    margin-top: 6px;
+.ns-engine-card.ok {
+    background: var(--ok-soft);
+    border: 1px solid #6EE7B7;
 }
 
-.ns-split-eeg { background: var(--teal); }
-.ns-split-mri { background: #4F7FA8; }
+.ns-engine-card.bad {
+    background: var(--warn-soft);
+    border: 1px solid #FCD34D;
+}
+
+.ns-engine-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+.ns-engine-card.ok .ns-engine-head { color: #065F46 !important; }
+.ns-engine-card.bad .ns-engine-head { color: #92400E !important; }
+
+.ns-engine-sub {
+    font-size: 0.8rem;
+    margin-top: 3px;
+}
+
+.ns-engine-card.ok .ns-engine-sub { color: #047857 !important; }
+.ns-engine-card.bad .ns-engine-sub { color: #B45309 !important; }
+
+.ns-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.ns-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.2); }
+.ns-dot.bad { background: var(--warn); box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.2); }
+
+/* Fusion Split Bar */
+.ns-split {
+    display: flex;
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #E2E8F0;
+    margin-top: 8px;
+}
+
+.ns-split-eeg { background: var(--teal); transition: width 0.2s ease; }
+.ns-split-mri { background: var(--blue); transition: width 0.2s ease; }
 
 .ns-split-labels {
     display: flex;
     justify-content: space-between;
-    font-size: 0.8rem;
-    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 600;
     margin-top: 6px;
     font-variant-numeric: tabular-nums;
 }
 
-.ns-panel-title { font-size: 1.04rem; font-weight: 600; color: var(--ink); margin-bottom: 2px; }
-.ns-panel-hint { font-size: 0.84rem; color: var(--muted); margin-bottom: 10px; }
+/* Modality Upload Cards */
+.ns-panel-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 3px 9px;
+    border-radius: 6px;
+    margin-bottom: 6px;
+}
+
+.ns-badge-eeg { background: var(--teal-soft); color: var(--teal-dark) !important; }
+.ns-badge-mri { background: var(--blue-soft); color: var(--blue-dark) !important; }
+
+.ns-panel-title { font-size: 1.08rem; font-weight: 700; color: var(--ink) !important; margin-bottom: 2px; }
+.ns-panel-hint { font-size: 0.85rem; color: var(--muted) !important; margin-bottom: 12px; }
 
 .ns-status {
     background: var(--surface-subtle);
-    border: 1px solid var(--line);
+    border: 1px solid #E2E8F0;
     border-radius: 8px;
     padding: 10px 14px;
-    margin-top: 10px;
+    margin-top: 12px;
 }
 
-.ns-status-k { font-size: 0.78rem; color: var(--muted); }
-.ns-status-v { font-size: 0.98rem; font-weight: 600; margin-top: 2px; }
-.ns-tone-ok { color: var(--ok); }
-.ns-tone-bad { color: var(--alert); }
-.ns-tone-idle { color: var(--muted); }
+.ns-status-k { font-size: 0.78rem; color: var(--faint) !important; font-weight: 500; }
+.ns-status-v { font-size: 0.96rem; font-weight: 700; margin-top: 2px; }
+.ns-tone-ok { color: var(--ok) !important; }
+.ns-tone-bad { color: var(--alert) !important; }
+.ns-tone-idle { color: var(--muted) !important; }
 
+/* Evaluation Report */
 .ns-report {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    padding: 20px 22px;
+    padding: 22px 24px;
+    box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
 }
 
 .ns-score {
@@ -296,26 +421,26 @@ button[data-testid="stBaseButton-primary"]:disabled {
     padding: 4px 12px;
     border-radius: 999px;
     font-size: 0.84rem;
-    font-weight: 600;
+    font-weight: 700;
 }
 
 .ns-scale {
     position: relative;
     display: flex;
-    height: 11px;
+    height: 12px;
     border-radius: 999px;
     margin: 24px 0 6px 0;
 }
 
-.ns-seg-low { width: 40%; background: #BFE3D0; border-radius: 999px 0 0 999px; }
-.ns-seg-mod { width: 30%; background: #F3D9A0; }
-.ns-seg-high { width: 30%; background: #EDB4B4; border-radius: 0 999px 999px 0; }
+.ns-seg-low { width: 40%; background: #6EE7B7; border-radius: 999px 0 0 999px; }
+.ns-seg-mod { width: 30%; background: #FCD34D; }
+.ns-seg-high { width: 30%; background: #FCA5A5; border-radius: 0 999px 999px 0; }
 
 .ns-marker {
     position: absolute;
     top: -6px;
     width: 4px;
-    height: 23px;
+    height: 24px;
     border-radius: 2px;
     background: var(--ink);
     transform: translateX(-2px);
@@ -324,79 +449,83 @@ button[data-testid="stBaseButton-primary"]:disabled {
 .ns-ticks {
     position: relative;
     height: 16px;
-    font-size: 0.75rem;
-    color: var(--faint);
+    font-size: 0.76rem;
+    color: var(--faint) !important;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
 }
 
 .ns-ticks span { position: absolute; transform: translateX(-50%); }
 
 .ns-note {
-    border-top: 1px solid var(--line);
+    border-top: 1px solid #E2E8F0;
     margin-top: 16px;
     padding-top: 12px;
     font-size: 0.9rem;
     line-height: 1.55;
-    color: var(--ink);
+    color: var(--ink) !important;
 }
 
 .ns-note small {
     display: block;
     margin-top: 8px;
-    color: var(--muted);
+    color: var(--muted) !important;
     font-size: 0.8rem;
 }
 
-.ns-bar-row { margin: 10px 0; }
+.ns-bar-row { margin: 11px 0; }
 .ns-bar-head {
     display: flex;
     justify-content: space-between;
     font-size: 0.88rem;
+    font-weight: 600;
     margin-bottom: 4px;
 }
 
 .ns-bar-head span:last-child {
-    color: var(--muted);
+    color: var(--muted) !important;
     font-variant-numeric: tabular-nums;
 }
 
 .ns-bar-track {
-    height: 8px;
+    height: 9px;
     border-radius: 999px;
-    background: #E6ECF1;
+    background: #E2E8F0;
     overflow: hidden;
 }
 
 .ns-bar-fill {
     height: 100%;
     border-radius: 999px;
-    background: #8FB9C7;
+    background: #93C5FD;
 }
 
-.ns-bar-fill.top { background: var(--teal); }
+.ns-bar-fill.top { background: linear-gradient(90deg, var(--teal), var(--blue)); }
 
 .ns-metric-big {
     font-size: 1.75rem;
     font-weight: 700;
-    color: var(--ink);
+    color: var(--ink) !important;
     margin: 2px 0 8px 0;
     font-variant-numeric: tabular-nums;
 }
 
+/* SVG Waveform Plot */
 .ns-svg-wrap svg { width: 100%; height: auto; display: block; }
-.ns-svg-wrap .grid { stroke: #E3EAF0; stroke-width: 1; }
-.ns-svg-wrap .axis { fill: var(--muted); font-size: 12px; font-family: 'IBM Plex Sans', sans-serif; }
-.ns-svg-wrap .trace { stroke: var(--teal); stroke-width: 2; fill: none; stroke-linejoin: round; }
-.ns-svg-wrap .trace-smooth { stroke: #1D4ED8; stroke-width: 2.2; stroke-dasharray: 6 4; fill: none; }
-.ns-svg-wrap .hit { fill: rgba(11, 122, 117, 0); cursor: crosshair; }
+.ns-svg-wrap .grid { stroke: #E2E8F0; stroke-width: 1; }
+.ns-svg-wrap .axis { fill: #475569; font-size: 12px; font-family: 'Plus Jakarta Sans', sans-serif; }
+.ns-svg-wrap .trace { stroke: var(--teal); stroke-width: 2.2; fill: none; stroke-linejoin: round; }
+.ns-svg-wrap .trace-smooth { stroke: var(--blue); stroke-width: 2.2; stroke-dasharray: 6 4; fill: none; }
+.ns-svg-wrap .hit { fill: rgba(15, 118, 110, 0); cursor: crosshair; }
 .ns-svg-wrap .hit:hover { fill: var(--teal); stroke: #FFFFFF; stroke-width: 2; }
 
 .ns-legend {
     display: flex;
     gap: 18px;
-    font-size: 0.82rem;
-    color: var(--muted);
-    margin-bottom: 6px;
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--muted) !important;
+    margin-bottom: 8px;
 }
 
 .ns-legend i {
@@ -408,43 +537,45 @@ button[data-testid="stBaseButton-primary"]:disabled {
     margin-right: 6px;
 }
 
+/* Info Cards */
 .ns-card {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    padding: 18px 20px;
+    padding: 20px 22px;
     height: 100%;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
 }
 
-.ns-card h4 { margin: 0 0 8px 0; font-size: 1rem; }
-.ns-card p, .ns-card li { color: var(--muted); font-size: 0.9rem; line-height: 1.65; }
+.ns-card h4 { margin: 0 0 8px 0; font-size: 1.02rem; color: var(--ink) !important; }
+.ns-card p, .ns-card li { color: var(--muted) !important; font-size: 0.9rem; line-height: 1.65; }
 .ns-card ul { margin: 0; padding-left: 18px; }
 
 .ns-step {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    background: var(--teal);
-    color: #FFFFFF;
-    font-weight: 600;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--teal), var(--blue));
+    color: #FFFFFF !important;
+    font-weight: 700;
     font-size: 0.85rem;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
 }
 
 .ns-footer {
     text-align: center;
-    color: var(--faint);
-    font-size: 0.8rem;
-    padding-top: 24px;
+    color: var(--faint) !important;
+    font-size: 0.82rem;
+    padding-top: 28px;
 }
 </style>
 """
 
 PULSE_SVG = (
-    '<svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" '
+    '<svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.2" '
     'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
     '<path d="M2 12h4l2.5-6 4 12 2.5-6H22"/></svg>'
 )
@@ -524,27 +655,27 @@ def classify_band(probability: float) -> tuple[str, str, str]:
     """Return (band_label, text_color, badge_bg) for display purposes."""
     p = min(max(float(probability), 0.0), 1.0)
     if p >= 0.70:
-        return "High", "#B03535", "#FBE7E7"
+        return "High", "#DC2626", "#FEF2F2"
     if p >= 0.40:
-        return "Moderate", "#A66300", "#FDF1DC"
-    return "Low", "#256F4F", "#E4F3EB"
+        return "Moderate", "#D97706", "#FFFBEB"
+    return "Low", "#059669", "#ECFDF5"
 
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=20, show_spinner=False)
 def check_backend_health(base_url: str) -> HealthStatus:
-    """Query GET /health with short caching to keep navigation responsive."""
+    """Query GET /health silently with caching for fast navigation."""
     if not base_url:
-        return HealthStatus(False, "No backend URL configured")
+        return HealthStatus(False, "No backend configured")
     try:
         resp = requests.get(f"{base_url}/health", timeout=DEFAULT_TIMEOUT_HEALTH)
         resp.raise_for_status()
         try:
             data = resp.json()
         except ValueError:
-            data = {"status": "ok (non-JSON response)"}
-        return HealthStatus(True, f"HTTP {resp.status_code} · Healthy", data)
-    except requests.RequestException as exc:
-        return HealthStatus(False, str(exc))
+            data = {"status": "ok"}
+        return HealthStatus(True, "Models loaded & ready", data)
+    except requests.RequestException:
+        return HealthStatus(False, "Cold start takes ~30s on Render")
 
 
 def request_prediction(
@@ -574,10 +705,12 @@ def request_prediction(
         if not isinstance(parsed, dict) or "final_risk" not in parsed:
             return False, "Backend response missing required 'final_risk' field."
         return True, parsed
+    except requests.Timeout:
+        return False, "The inference server is still waking up from sleep. Please click Run Multimodal Inference again in a few seconds."
     except requests.RequestException as exc:
-        return False, f"Request failed: {exc}"
+        return False, f"Unable to reach the inference service ({exc})."
     except ValueError:
-        return False, "Backend returned invalid JSON from POST /predict."
+        return False, "Backend returned an unreadable JSON payload."
 
 
 # =====================================================================
@@ -606,8 +739,8 @@ def build_eeg_svg(
     svg_parts = [
         "<defs>"
         '<linearGradient id="ns-eeg-grad" x1="0" y1="0" x2="0" y2="1">'
-        '<stop offset="0" stop-color="#0B7A75" stop-opacity="0.15"/>'
-        '<stop offset="1" stop-color="#0B7A75" stop-opacity="0"/>'
+        '<stop offset="0" stop-color="#0F766E" stop-opacity="0.20"/>'
+        '<stop offset="1" stop-color="#0F766E" stop-opacity="0.0"/>'
         "</linearGradient></defs>"
     ]
 
@@ -726,8 +859,9 @@ def render_score_card(final_risk: Any) -> None:
 def render_eeg_card(eeg_data: dict[str, Any]) -> None:
     with st.container(border=True):
         render_html(
+            '<span class="ns-panel-badge ns-badge-eeg">1D-CNN Branch</span>'
             '<div class="ns-panel-title">EEG model output</div>'
-            '<div class="ns-panel-hint">1D signal anomaly estimation</div>'
+            '<div class="ns-panel-hint">Temporal signal anomaly estimation</div>'
         )
         raw_prob = eeg_data.get("probability")
         try:
@@ -746,6 +880,7 @@ def render_eeg_card(eeg_data: dict[str, Any]) -> None:
 def render_mri_card(mri_data: dict[str, Any]) -> None:
     with st.container(border=True):
         render_html(
+            '<span class="ns-panel-badge ns-badge-mri">MobileNetV2 Branch</span>'
             '<div class="ns-panel-title">MRI model output</div>'
             '<div class="ns-panel-hint">2D scan slice classification</div>'
         )
@@ -779,8 +914,9 @@ def render_mri_card(mri_data: dict[str, Any]) -> None:
 
 
 def render_results(result: dict[str, Any]) -> None:
+    st.divider()
     st.markdown("## Evaluation report")
-    st.caption("Output returned by POST /predict on the connected backend.")
+    st.caption("Multimodal inference results generated by the NeuroSense neural engine.")
 
     col_summary, col_models = st.columns([0.92, 1.08], gap="large")
 
@@ -803,56 +939,54 @@ def render_results(result: dict[str, Any]) -> None:
             render_mri_card(result["mri"])
 
     serialized = json.dumps(result, indent=2, ensure_ascii=False)
-    st.download_button(
-        label="Download report (JSON)",
-        data=serialized.encode("utf-8"),
-        file_name="neurosense_prediction_report.json",
-        mime="application/json",
-    )
+    col_dl, _ = st.columns([1, 2])
+    with col_dl:
+        st.download_button(
+            label="Download report (JSON)",
+            data=serialized.encode("utf-8"),
+            file_name="neurosense_prediction_report.json",
+            mime="application/json",
+            use_container_width=True,
+        )
 
     with st.expander("Inspect raw JSON response"):
         st.code(serialized, language="json")
 
 
 # =====================================================================
-# SIDEBAR CONTROLS
+# SIDEBAR CONTROLS (Clean User-Facing Layout)
 # =====================================================================
 st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("### Backend configuration")
-    backend_url = st.text_input(
-        "FastAPI endpoint base URL",
-        value=DEFAULT_API_URL,
-        help="Set via NEUROSENSE_API environment variable or Streamlit secrets.",
-    ).strip().rstrip("/")
+    st.markdown("### NeuroSense Engine")
+    health = check_backend_health(BACKEND_API_URL)
+    card_cls = "ok" if health.reachable else "bad"
+    dot_cls = "ok" if health.reachable else "bad"
+    title_txt = "Inference API Online" if health.reachable else "Waking Up Server..."
 
-    col_ping, col_clear = st.columns(2)
-    with col_ping:
-        ping_clicked = st.button("Check health", use_container_width=True)
-    with col_clear:
+    render_html(
+        f"""
+        <div class="ns-engine-card {card_cls}">
+            <div class="ns-engine-head">
+                <span class="ns-dot {dot_cls}"></span>
+                <span>{html.escape(title_txt)}</span>
+            </div>
+            <div class="ns-engine-sub">{html.escape(health.detail)}</div>
+        </div>
+        """
+    )
+
+    c_ref, c_rst = st.columns(2)
+    with c_ref:
+        if st.button("Refresh status", use_container_width=True):
+            check_backend_health.clear()
+            st.rerun()
+    with c_rst:
         if st.button("Reset session", use_container_width=True):
             check_backend_health.clear()
             st.session_state.pop("prediction_result", None)
             st.rerun()
-
-    if ping_clicked:
-        check_backend_health.clear()
-
-    health = check_backend_health(backend_url)
-    dot_cls = "ok" if health.reachable else "bad"
-    status_txt = "Backend reachable" if health.reachable else "Backend unreachable"
-    render_html(
-        f'<div class="ns-conn"><span class="ns-dot {dot_cls}"></span>'
-        f"<span>{html.escape(status_txt)}</span></div>"
-    )
-    if health.reachable:
-        st.caption(health.detail)
-        if health.payload is not None:
-            with st.expander("Health payload"):
-                st.json(health.payload)
-    else:
-        st.caption("Ensure the FastAPI service is running and reachable.")
 
     st.divider()
     st.markdown("### Multimodal fusion")
@@ -871,8 +1005,8 @@ with st.sidebar:
             <div class="ns-split-mri" style="width:{(1.0 - alpha) * 100:.0f}%"></div>
         </div>
         <div class="ns-split-labels">
-            <span>EEG: {alpha:.0%}</span>
-            <span>MRI: {1.0 - alpha:.0%}</span>
+            <span style="color:#0F766E">EEG: {alpha:.0%}</span>
+            <span style="color:#2563EB">MRI: {1.0 - alpha:.0%}</span>
         </div>
         """
     )
@@ -883,7 +1017,6 @@ with st.sidebar:
     sample_mode = st.radio(
         "Sample profile",
         options=["Baseline waveform", "Elevated burst waveform"],
-        horizontal=True,
         label_visibility="collapsed",
     )
     is_anomalous = sample_mode == "Elevated burst waveform"
@@ -897,11 +1030,11 @@ with st.sidebar:
 
 
 # =====================================================================
-# HEADER & DISCLAIMER
+# HERO HEADER & DISCLAIMER
 # =====================================================================
 render_html(
     f"""
-    <div class="ns-topbar">
+    <div class="ns-hero">
         <div class="ns-brand">
             <div class="ns-mark">{PULSE_SVG}</div>
             <div>
@@ -934,17 +1067,21 @@ with tab_analysis:
     col_eeg, col_mri = st.columns(2, gap="large")
 
     eeg_bytes: bytes | None = None
+    eeg_filename: str = "eeg_recording.csv"
     eeg_values: list[float] | None = None
     eeg_valid = True
     eeg_status = ("Awaiting file", "idle")
 
     mri_bytes: bytes | None = None
+    mri_filename: str = "mri_scan.png"
+    mri_mime: str = "image/png"
     mri_status = ("Awaiting file", "idle")
 
     with col_eeg:
         with st.container(border=True):
             render_html(
-                f'<div class="ns-panel-title">EEG recording</div>'
+                '<span class="ns-panel-badge ns-badge-eeg">Modality 01 · Signal</span>'
+                '<div class="ns-panel-title">EEG recording</div>'
                 f'<div class="ns-panel-hint">CSV or TXT containing exactly {EEG_LEN} numeric samples</div>'
             )
             eeg_file = st.file_uploader(
@@ -955,6 +1092,7 @@ with tab_analysis:
             )
             if eeg_file is not None:
                 eeg_bytes = eeg_file.getvalue()
+                eeg_filename = eeg_file.name
                 parsed_eeg = parse_eeg_bytes(eeg_bytes)
                 if parsed_eeg is None or len(parsed_eeg) != EEG_LEN:
                     found = 0 if parsed_eeg is None else len(parsed_eeg)
@@ -978,6 +1116,7 @@ with tab_analysis:
     with col_mri:
         with st.container(border=True):
             render_html(
+                '<span class="ns-panel-badge ns-badge-mri">Modality 02 · Imaging</span>'
                 '<div class="ns-panel-title">MRI scan image</div>'
                 '<div class="ns-panel-hint">PNG, JPG, or JPEG axial/sagittal/coronal slice</div>'
             )
@@ -989,6 +1128,8 @@ with tab_analysis:
             )
             if mri_file is not None:
                 mri_bytes = mri_file.getvalue()
+                mri_filename = mri_file.name
+                mri_mime = mri_file.type or "image/png"
                 mri_status = ("Loaded image", "ok")
                 st.image(
                     io.BytesIO(mri_bytes),
@@ -1015,141 +1156,130 @@ with tab_analysis:
             with c2:
                 idx_end = st.slider("End sample", idx_start + 9, EEG_LEN - 1, EEG_LEN - 1)
             with c3:
-                smooth_win = st.select_slider("Smoothing window", options=[1, 3, 5, 9, 15], value=1)
+                smooth_win = st.slider("Moving average window", 1, 15, 1, step=2)
 
             smoothed = smooth_values(eeg_values, smooth_win) if smooth_win > 1 else None
-            legend = '<div class="ns-legend"><span><i style="background:#0B7A75"></i>Raw signal</span>'
-            if smoothed is not None:
-                legend += '<span><i style="background:#1D4ED8"></i>Moving average</span>'
-            legend += "</div>"
-            render_html(legend)
+            legend_extra = (
+                f'<span><i style="background:#2563EB"></i>Smoothed ({smooth_win}-pt)</span>'
+                if smoothed is not None
+                else ""
+            )
+            render_html(
+                f'<div class="ns-legend">'
+                f'<span><i style="background:#0F766E"></i>Raw EEG amplitude</span>'
+                f'{legend_extra}</div>'
+                f'<div class="ns-svg-wrap">{build_eeg_svg(eeg_values, idx_start, idx_end, smoothed)}</div>'
+            )
 
-            svg_markup = build_eeg_svg(eeg_values, idx_start, idx_end, smoothed)
-            render_html(f'<div class="ns-svg-wrap">{svg_markup}</div>')
+    st.markdown("")
+    has_any_valid_input = (eeg_values is not None and eeg_valid) or (mri_bytes is not None)
+    can_run = has_any_valid_input and eeg_valid
 
-            with st.expander("View sample table"):
-                df_samples = pd.DataFrame(
-                    {
-                        "sample_index": np.arange(EEG_LEN),
-                        "amplitude": eeg_values,
-                    }
-                )
-                st.dataframe(df_samples, use_container_width=True, hide_index=True)
-
-    has_input = (eeg_values is not None) or (mri_bytes is not None)
-    ready_to_run = eeg_valid and has_input
-
-    st.write("")
-    run_btn = st.button(
-        "Run multimodal inference",
+    run_clicked = st.button(
+        "Run Multimodal Inference",
         type="primary",
-        disabled=not ready_to_run,
+        disabled=not can_run,
         use_container_width=True,
     )
 
-    if not has_input:
+    if not has_any_valid_input:
         st.caption("Upload at least one valid modality file to run inference.")
 
-    if run_btn and ready_to_run:
-        eeg_tuple = (eeg_file.name, eeg_bytes) if (eeg_values is not None and eeg_file and eeg_bytes) else None
-        mri_tuple = (
-            (mri_file.name, mri_bytes, mri_file.type or "image/png")
-            if (mri_bytes is not None and mri_file)
-            else None
-        )
+    if run_clicked:
+        eeg_payload = (eeg_filename, eeg_bytes) if (eeg_bytes is not None and eeg_valid) else None
+        mri_payload = (mri_filename, mri_bytes, mri_mime) if mri_bytes is not None else None
 
-        with st.spinner("Sending inputs to FastAPI backend..."):
-            ok, payload = request_prediction(backend_url, eeg_tuple, mri_tuple, alpha)
+        with st.spinner("Running multimodal inference (waking server if idle)..."):
+            ok, outcome = request_prediction(
+                base_url=BACKEND_API_URL,
+                eeg_payload=eeg_payload,
+                mri_payload=mri_payload,
+                alpha=alpha,
+            )
 
-        if ok and isinstance(payload, dict):
-            st.session_state["prediction_result"] = payload
+        if ok and isinstance(outcome, dict):
+            st.session_state["prediction_result"] = outcome
+            check_backend_health.clear()
         else:
-            st.error(str(payload))
+            st.error(str(outcome))
 
     if "prediction_result" in st.session_state:
-        st.divider()
         render_results(st.session_state["prediction_result"])
 
 
 with tab_architecture:
     st.markdown("## System & methodology")
-    st.caption("Overview of client-side validation, backend inference contract, and fusion weighting.")
+    st.caption("Dual-branch multimodal pipeline combining 1D temporal signal processing with 2D spatial imaging.")
 
-    c1, c2, c3 = st.columns(3, gap="large")
-    with c1:
+    s1, s2, s3 = st.columns(3, gap="large")
+    with s1:
         render_html(
             """
             <div class="ns-card">
-                <div class="ns-step">1</div>
-                <h4>Client-side pre-validation</h4>
-                <p>
-                    Verifies finite floating-point samples and exact 178-point length
-                    for EEG files prior to network upload, reducing malformed requests.
-                </p>
+                <div class="ns-step">01</div>
+                <h4>1D-CNN EEG Branch</h4>
+                <p>Processes standardized 178-sample EEG segments using multi-scale 1D convolutions,
+                batch normalization, and pooling layers to capture high-frequency transient bursts
+                and rhythmic anomalies.</p>
             </div>
             """
         )
-    with c2:
+    with s2:
         render_html(
             """
             <div class="ns-card">
-                <div class="ns-step">2</div>
-                <h4>FastAPI inference contract</h4>
-                <p>
-                    Submits multipart inputs to <code>POST /predict</code> with fusion
-                    parameter <code>alpha</code> and monitors service readiness via
-                    <code>GET /health</code>.
-                </p>
+                <div class="ns-step">02</div>
+                <h4>MobileNetV2 MRI Branch</h4>
+                <p>Extracts spatial representations from 2D MRI slices via depthwise separable
+                convolutions, outputting multi-class probability distributions across structural
+                brain categories.</p>
             </div>
             """
         )
-    with c3:
+    with s3:
         render_html(
             """
             <div class="ns-card">
-                <div class="ns-step">3</div>
-                <h4>Transparent reporting</h4>
-                <p>
-                    Presents combined scores alongside individual EEG and MRI outputs,
-                    downloadable JSON reports, and full raw payloads.
-                </p>
+                <div class="ns-step">03</div>
+                <h4>Decision-Level Late Fusion</h4>
+                <p>Combines normalized modality risk scores using configurable weight α
+                (<code>α · P_EEG + (1 - α) · P_MRI</code>), while gracefully falling back to
+                single-modality inference when only one input is supplied.</p>
             </div>
             """
         )
 
 
 with tab_limitations:
-    st.markdown("## Limitations & ethics")
-    st.caption("Key technical boundaries and responsible-use guardrails for this prototype.")
+    st.markdown("## Limitations & ethical considerations")
+    st.caption("Important boundaries for interpreting experimental outputs from this build.")
 
-    left, right = st.columns(2, gap="large")
-    with left:
+    l1, l2 = st.columns(2, gap="large")
+    with l1:
         render_html(
             """
             <div class="ns-card">
-                <h4>Technical boundaries</h4>
+                <h4>Technical &amp; Dataset Constraints</h4>
                 <ul>
-                    <li>Display bands (0–40%, 40–70%, 70–100%) are arbitrary visual ranges, not calibrated medical cutoffs.</li>
-                    <li>Single-modality and fused outputs depend on backend model weights, calibration, and input domain shift.</li>
-                    <li>EEG windowing expects fixed-length 178-sample segments formatted consistently with training data.</li>
+                    <li><strong>Single-slice evaluation:</strong> The MRI branch inspects individual 2D slices rather than full 3D volumetric NIfTI studies.</li>
+                    <li><strong>Fixed EEG window:</strong> Signals are constrained to 178-sample windows and do not capture multi-channel montage correlations.</li>
+                    <li><strong>Domain shift:</strong> Scanner hardware, electrode impedance, and preprocessing pipelines can alter prediction calibration.</li>
                 </ul>
             </div>
             """
         )
-    with right:
+    with l2:
         render_html(
             """
             <div class="ns-card">
-                <h4>Ethical &amp; clinical guardrails</h4>
+                <h4>Intended Use &amp; Safety</h4>
                 <ul>
-                    <li>Not a medical device and not approved for clinical diagnosis, screening, or treatment planning.</li>
-                    <li>Avoid uploading identifiable patient metadata or PHI unless governed by approved research protocols.</li>
-                    <li>Always consult licensed clinicians for medical evaluation and emergency care.</li>
+                    <li><strong>Non-clinical research only:</strong> This software has not undergone regulatory clearance (FDA/CE) or prospective clinical trials.</li>
+                    <li><strong>Human-in-the-loop:</strong> Outputs should only support academic benchmarking and algorithm exploration, never patient triage.</li>
+                    <li><strong>Data privacy:</strong> Avoid uploading identifiable patient health information (PHI) or un-anonymized DICOM metadata.</li>
                 </ul>
             </div>
             """
         )
 
-    render_html(
-        '<div class="ns-footer">NeuroSense · Multimodal EEG &amp; MRI Research Prototype</div>'
-    )
+render_html('<div class="ns-footer">NeuroSense · Multimodal EEG &amp; MRI Research Workspace</div>')
