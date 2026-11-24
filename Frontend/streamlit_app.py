@@ -1,12 +1,22 @@
 """
-NeuroSense — AI Neurological Screening Dashboard (research prototype)
+NeuroSense - EEG and MRI analysis workspace (research prototype)
 Run: streamlit run Frontend/streamlit_app.py
 
 Single file, no extra config needed.
 
-UI: deep navy / purple / cyan theme, built only with Streamlit components,
-CSS and inline SVG (no Plotly). Backend contract (POST /predict, GET /health)
-is unchanged.
+UI: clinical light theme (white surfaces, deep teal accent, restrained colour),
+health-themed loading screen that checks the backend, report-style results.
+Built only with Streamlit components, CSS and inline SVG.
+Backend contract (POST /predict, GET /health) is unchanged.
+
+Optional: add .streamlit/config.toml so Streamlit's own widgets match the theme:
+
+    [theme]
+    base = "light"
+    primaryColor = "#0B7A75"
+    backgroundColor = "#F3F6F8"
+    secondaryBackgroundColor = "#FFFFFF"
+    textColor = "#102A3C"
 """
 
 import html
@@ -14,17 +24,30 @@ import io
 import json
 import math
 import os
+import time
 
 import pandas as pd
 import requests
 import streamlit as st
 
 EEG_LEN = 178
-DEFAULT_API = os.getenv("NEUROSENSE_API", "http://localhost:8000")
+
+
+def _default_api() -> str:
+    """Backend URL: Streamlit secret, then env var, then localhost."""
+    try:
+        if "NEUROSENSE_API" in st.secrets:
+            return str(st.secrets["NEUROSENSE_API"])
+    except Exception:  # no secrets file configured
+        pass
+    return os.getenv("NEUROSENSE_API", "http://localhost:8000")
+
+
+DEFAULT_API = _default_api()
 
 st.set_page_config(
-    page_title="NeuroSense | AI Brain Analytics",
-    page_icon="🧠",
+    page_title="NeuroSense | EEG and MRI analysis",
+    page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -35,420 +58,231 @@ st.set_page_config(
 # =====================================================================
 THEME_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
 
 :root {
-    --bg0: #060A1C;
-    --bg1: #0B1030;
-    --panel: rgba(18, 25, 66, .66);
-    --line: rgba(150, 160, 255, .18);
-    --text: #EAF0FF;
-    --muted: #A3AEDB;
-    --faint: #7782B5;
-    --violet: #8B5CF6;
-    --indigo: #4F46E5;
-    --cyan: #22D3EE;
-    --pink: #F472B6;
-    --ok: #34D399;
-    --warn: #FBBF24;
-    --alert: #FB7185;
-    --grad: linear-gradient(120deg, #7C3AED 0%, #4F46E5 48%, #06B6D4 100%);
-    --radius: 20px;
+    --bg: #F3F6F8;
+    --surface: #FFFFFF;
+    --ink: #102A3C;
+    --muted: #5B6F80;
+    --faint: #8A9AA8;
+    --line: #D8E1E8;
+    --teal: #0B7A75;
+    --teal-dark: #095F5B;
+    --teal-soft: #E3F2F1;
+    --ok: #2E7D5B;
+    --ok-soft: #E4F3EB;
+    --warn: #B26A00;
+    --warn-soft: #FDF1DC;
+    --alert: #B83B3B;
+    --alert-soft: #FBE7E7;
+    --radius: 10px;
 }
 
 /* ---------- page ---------- */
 .stApp {
-    background:
-        radial-gradient(900px 520px at 6% -6%, rgba(124, 58, 237, .34), transparent 60%),
-        radial-gradient(820px 520px at 100% 0%, rgba(6, 182, 212, .20), transparent 55%),
-        linear-gradient(180deg, var(--bg0) 0%, var(--bg1) 100%);
-    background-attachment: fixed;
-    font-family: 'Plus Jakarta Sans', sans-serif;
-    color: var(--text);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
 }
-.block-container { padding-top: 2.2rem; max-width: 1180px; }
-
-[data-testid="stHeader"] {
-    background: rgba(6, 10, 28, .55);
-    backdrop-filter: blur(8px);
-}
-[data-testid="stHeader"] * { color: #C9D1F5; }
-
+.block-container { padding-top: 1.6rem; max-width: 1160px; }
+[data-testid="stHeader"] { background: rgba(243, 246, 248, .85); backdrop-filter: blur(6px); }
 .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
-    font-family: 'Sora', sans-serif !important;
-    color: #FFFFFF !important;
-    letter-spacing: -0.01em;
+    font-family: 'IBM Plex Sans', sans-serif !important;
+    color: var(--ink) !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.005em;
 }
-[data-testid="stMarkdownContainer"] { color: var(--text); }
-[data-testid="stCaptionContainer"],
-[data-testid="stImageCaption"] { color: var(--muted) !important; }
-[data-testid="stSpinner"] * { color: var(--muted) !important; }
-[data-testid="stAlert"] { border-radius: 12px; }
+.stApp h2 { font-size: 1.45rem !important; }
+[data-testid="stMarkdownContainer"], [data-testid="stWidgetLabel"] p,
+[data-testid="stCheckbox"] p { color: var(--ink); }
+[data-testid="stCaptionContainer"], [data-testid="stImageCaption"] { color: var(--muted) !important; }
+[data-testid="stAlert"] { border-radius: 8px; }
 
 /* ---------- sidebar ---------- */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0A0F2C 0%, #131A4A 60%, #1C1F66 100%);
-    border-right: 1px solid var(--line);
-}
-[data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { color: var(--text); }
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: var(--muted) !important; }
-[data-baseweb="input"], [data-baseweb="base-input"] {
-    background: #0C1238 !important;
-    border-radius: 10px !important;
-}
-[data-testid="stSidebar"] input {
-    color: var(--text) !important;
-    -webkit-text-fill-color: var(--text) !important;
-}
+[data-testid="stSidebar"] { background: var(--surface); border-right: 1px solid var(--line); }
+[data-baseweb="input"], [data-baseweb="base-input"] { background: #F7F9FB !important; border-radius: 8px !important; }
+[data-baseweb="input"]:focus-within, [data-baseweb="base-input"]:focus-within { border-color: var(--teal) !important; }
+[data-testid="stSidebar"] input { color: var(--ink) !important; -webkit-text-fill-color: var(--ink) !important; }
+hr { border-color: var(--line) !important; }
 
 /* ---------- widgets ---------- */
-[data-testid="stSlider"] *,
-[data-testid="stSelectSlider"] * { color: var(--text); }
-[data-baseweb="slider"] [role="slider"] {
-    background: var(--cyan) !important;
-    border-color: var(--cyan) !important;
-    box-shadow: 0 0 0 4px rgba(34, 211, 238, .25) !important;
-}
-/* recolour Streamlit's default red accents (no config.toml needed) */
+[data-baseweb="slider"] [role="slider"] { background: var(--teal) !important; border-color: var(--teal) !important; }
 [data-testid="stSlider"] [data-baseweb="slider"] div[style*="linear-gradient"],
 [data-testid="stSelectSlider"] [data-baseweb="slider"] div[style*="linear-gradient"] {
-    background: linear-gradient(90deg, #8B5CF6, #22D3EE) !important;
+    background: var(--teal) !important;
 }
-[data-baseweb="input"]:focus-within, [data-baseweb="base-input"]:focus-within {
-    border-color: var(--cyan) !important;
-}
-[data-testid="stSidebar"] hr, [data-testid="stMain"] hr { border-color: var(--line) !important; }
-[data-testid="stCheckbox"] p,
-[data-testid="stWidgetLabel"] p { color: var(--text) !important; }
-
 [data-testid="stFileUploader"] section {
-    background: rgba(255, 255, 255, .04);
-    border: 1.5px dashed rgba(139, 92, 246, .65);
-    border-radius: 14px;
+    background: #F7F9FB; border: 1.5px dashed #9FB4C3; border-radius: 8px;
 }
 [data-testid="stFileUploader"] section * { color: var(--muted) !important; }
 [data-testid="stFileUploader"] button {
-    background: rgba(139, 92, 246, .18) !important;
-    border: 1px solid rgba(139, 92, 246, .55) !important;
-    border-radius: 10px !important;
-    color: #FFFFFF !important;
+    background: var(--surface) !important; border: 1px solid var(--teal) !important;
+    color: var(--teal-dark) !important; border-radius: 8px !important;
 }
-[data-testid="stFileUploader"] button:hover { border-color: var(--cyan) !important; }
+[data-testid="stFileUploader"] button:hover { background: var(--teal-soft) !important; }
+[data-testid="stExpander"] { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 
-[data-testid="stExpander"] {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 14px;
+.stButton > button[kind="secondary"], button[data-testid="stBaseButton-secondary"] {
+    background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
 }
-[data-testid="stExpander"] summary, [data-testid="stExpander"] summary * { color: var(--text) !important; }
-
-/* secondary buttons */
-.stButton > button[kind="secondary"],
-button[data-testid="stBaseButton-secondary"] {
-    background: rgba(255, 255, 255, .06);
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    transition: border-color .2s, transform .2s;
+.stButton > button[kind="secondary"]:hover, button[data-testid="stBaseButton-secondary"]:hover {
+    border-color: var(--teal); color: var(--teal-dark);
 }
-.stButton > button[kind="secondary"]:hover,
-button[data-testid="stBaseButton-secondary"]:hover {
-    border-color: var(--cyan);
-    color: #FFFFFF;
-    transform: translateY(-1px);
-}
-
-/* primary action */
-.stButton > button[kind="primary"],
-button[data-testid="stBaseButton-primary"] {
-    background: var(--grad);
-    color: #FFFFFF;
-    border: none;
-    border-radius: 14px;
-    font-weight: 700;
-    font-size: 17px;
-    min-height: 58px;
-    box-shadow: 0 10px 30px rgba(99, 102, 241, .45), 0 0 0 1px rgba(255, 255, 255, .08) inset;
-    transition: transform .2s, box-shadow .2s, filter .2s;
+.stButton > button[kind="primary"], button[data-testid="stBaseButton-primary"] {
+    background: var(--teal); color: #FFFFFF; border: none; border-radius: 8px;
+    font-weight: 600; font-size: 16px; min-height: 52px;
 }
 .stButton > button[kind="primary"]:hover:not(:disabled),
-button[data-testid="stBaseButton-primary"]:hover:not(:disabled) {
-    transform: translateY(-2px);
-    filter: brightness(1.08);
-    box-shadow: 0 14px 38px rgba(34, 211, 238, .38);
-    color: #FFFFFF;
-}
+button[data-testid="stBaseButton-primary"]:hover:not(:disabled) { background: var(--teal-dark); color: #FFFFFF; }
 .stButton > button[kind="primary"]:disabled,
-button[data-testid="stBaseButton-primary"]:disabled {
-    background: rgba(255, 255, 255, .08);
-    color: var(--faint);
-    box-shadow: none;
-}
+button[data-testid="stBaseButton-primary"]:disabled { background: #E3E9EE; color: var(--faint); }
+.stButton > button:focus-visible { outline: 3px solid rgba(11, 122, 117, .45); outline-offset: 2px; }
 
-/* bordered containers act as cards */
+/* bordered containers are the main white panels */
 [data-testid="stVerticalBlockBorderWrapper"] {
-    background: var(--panel);
-    border: 1px solid var(--line) !important;
-    border-radius: var(--radius) !important;
-    box-shadow: 0 14px 40px rgba(3, 6, 24, .45);
-    transition: border-color .2s, box-shadow .2s;
-}
-[data-testid="stVerticalBlockBorderWrapper"]:hover {
-    border-color: rgba(34, 211, 238, .42) !important;
+    background: var(--surface); border: 1px solid var(--line) !important; border-radius: var(--radius) !important;
 }
 
 /* tabs = main navigation */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 6px;
-    background: rgba(255, 255, 255, .04);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 5px;
-}
-.stTabs [data-baseweb="tab"] {
-    height: 44px;
-    border-radius: 11px;
-    padding: 0 20px;
-    font-weight: 600;
-    color: var(--muted);
-}
+.stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--line); }
+.stTabs [data-baseweb="tab"] { height: 46px; padding: 0 18px; font-weight: 500; color: var(--muted); }
 .stTabs [data-baseweb="tab"] * { color: inherit !important; }
-.stTabs [aria-selected="true"] { background: var(--grad); color: #FFFFFF; }
-.stTabs [data-baseweb="tab-highlight"],
+.stTabs [aria-selected="true"] { color: var(--teal-dark) !important; font-weight: 600; }
+.stTabs [data-baseweb="tab-highlight"] { background: var(--teal) !important; height: 3px; }
 .stTabs [data-baseweb="tab-border"] { display: none; }
 
-/* ---------- hero ---------- */
-.hero {
-    position: relative;
-    overflow: hidden;
-    border-radius: 28px;
-    padding: 46px 50px 78px 50px;
-    margin-bottom: 16px;
-    background:
-        radial-gradient(620px 340px at 86% 22%, rgba(34, 211, 238, .30), transparent 62%),
-        radial-gradient(540px 360px at 8% 0%, rgba(139, 92, 246, .46), transparent 62%),
-        linear-gradient(135deg, #0B1240 0%, #1B1672 55%, #0D587F 100%);
-    border: 1px solid rgba(160, 170, 255, .25);
-    box-shadow: 0 24px 60px rgba(5, 8, 30, .55), inset 0 1px 0 rgba(255, 255, 255, .08);
+/* ---------- top bar ---------- */
+.topbar {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    padding: 4px 0 18px 0; border-bottom: 1px solid var(--line); margin-bottom: 14px;
 }
-.hero-net {
-    position: absolute; inset: 0; width: 100%; height: 100%;
-    opacity: .34; pointer-events: none;
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-mark {
+    width: 40px; height: 40px; border-radius: 10px; background: var(--teal);
+    display: flex; align-items: center; justify-content: center;
 }
-.hero-inner {
-    position: relative;
-    display: flex; align-items: center; justify-content: space-between; gap: 28px;
+.brand-mark svg { width: 24px; height: 24px; }
+.brand-name { font-size: 22px; font-weight: 700; color: var(--ink); line-height: 1.1; }
+.brand-sub { font-size: 13.5px; color: var(--muted); }
+.pill {
+    background: var(--warn-soft); color: var(--warn); border: 1px solid #F0D9A8;
+    border-radius: 999px; padding: 5px 14px; font-size: 13px; font-weight: 600;
 }
-.hero-copy { max-width: 600px; }
-.hero-chip {
-    display: inline-flex; align-items: center; gap: 8px;
-    background: rgba(34, 211, 238, .12);
-    border: 1px solid rgba(34, 211, 238, .4);
-    color: #A5F3FC;
-    padding: 6px 14px; border-radius: 999px;
-    font-size: 13px; font-weight: 600;
-}
-.pulse {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--cyan);
-    box-shadow: 0 0 0 0 rgba(34, 211, 238, .7);
-    animation: ns-pulse 2s infinite;
-}
-@keyframes ns-pulse {
-    70% { box-shadow: 0 0 0 9px rgba(34, 211, 238, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0); }
-}
-.hero-title {
-    font-family: 'Sora', sans-serif;
-    font-size: 44px; font-weight: 700; line-height: 1.12;
-    color: #FFFFFF; margin: 16px 0 12px 0;
-}
-.hero-sub { color: #CFD8FF; font-size: 16px; line-height: 1.7; margin: 0 0 20px 0; }
-.hero-tags { display: flex; flex-wrap: wrap; gap: 8px; }
-.hero-tags span {
-    background: rgba(255, 255, 255, .09);
-    border: 1px solid rgba(255, 255, 255, .16);
-    color: #E3E9FF;
-    padding: 6px 12px; border-radius: 999px;
-    font-size: 13px; font-weight: 500;
-}
-.hero-brain {
-    width: 300px; height: auto; flex-shrink: 0;
-    filter: drop-shadow(0 0 26px rgba(139, 92, 246, .6));
-}
-.hero-brain .node { animation: ns-node 2.8s ease-in-out infinite; }
-.hero-brain .node:nth-of-type(2n) { animation-delay: .9s; }
-.hero-brain .node:nth-of-type(3n) { animation-delay: 1.8s; }
-@keyframes ns-node { 50% { opacity: .35; } }
-.hero-wave {
-    position: absolute; left: 0; right: 0; bottom: 14px;
-    width: 100%; height: 56px; opacity: .92; pointer-events: none;
-}
-.hero-wave path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: ns-draw 3.2s ease-out .3s forwards; }
-@keyframes ns-draw { to { stroke-dashoffset: 0; } }
+.intro { color: var(--muted); font-size: 15px; line-height: 1.65; max-width: 760px; margin: 0 0 14px 0; }
 
 /* ---------- disclaimer ---------- */
 .disclaimer {
-    display: flex; gap: 14px; align-items: flex-start;
-    background: rgba(251, 191, 36, .08);
-    border: 1px solid rgba(251, 191, 36, .35);
-    border-left: 5px solid var(--warn);
-    border-radius: 14px;
-    padding: 14px 18px;
-    color: #FDE7A8; font-size: 14px; line-height: 1.6;
-    margin: 0 0 20px 0;
+    background: var(--warn-soft); border: 1px solid #F0D9A8; border-left: 4px solid var(--warn);
+    border-radius: 8px; padding: 12px 16px; color: #5C3B00; font-size: 14px; line-height: 1.6; margin: 0 0 18px 0;
 }
-.disclaimer b { color: #FFFFFF; }
-.disclaimer-icon { font-size: 22px; line-height: 1.3; }
+.disclaimer b { color: #3F2800; }
 
-/* ---------- sidebar brand and split bar ---------- */
-.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
-.brand-mark {
-    width: 42px; height: 42px; border-radius: 12px;
-    background: var(--grad); display: flex; align-items: center; justify-content: center;
-    font-size: 22px; box-shadow: 0 0 18px rgba(99, 102, 241, .6);
+/* ---------- loading screen ---------- */
+.boot {
+    position: fixed; inset: 0; z-index: 99999; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif; padding: 24px; text-align: center;
 }
-.brand-name { font-family: 'Sora', sans-serif; font-size: 20px; font-weight: 700; color: #FFFFFF; line-height: 1.1; }
-.brand-sub { font-size: 12px; color: var(--muted); }
-.split { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,.08); margin-top: 4px; }
-.split-eeg { background: var(--violet); }
-.split-mri { background: var(--cyan); }
-.split-legend { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.boot svg { width: min(460px, 86vw); height: auto; }
+.boot-ecg { stroke-dasharray: 1; stroke-dashoffset: 1; animation: ns-ecg 2.4s linear infinite; }
+@keyframes ns-ecg { 0% { stroke-dashoffset: 1; } 70% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: 0; opacity: .15; } }
+.boot-title { font-size: 26px; font-weight: 700; color: var(--ink); }
+.boot-msg { font-size: 15px; color: var(--muted); min-height: 22px; }
+.boot-bar { width: min(320px, 70vw); height: 4px; background: var(--line); border-radius: 999px; overflow: hidden; }
+.boot-bar span { display: block; height: 100%; width: 40%; background: var(--teal); border-radius: 999px; animation: ns-slide 1.4s ease-in-out infinite; }
+@keyframes ns-slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+.boot-note { font-size: 12.5px; color: var(--faint); }
 
-/* ---------- cards ---------- */
-.panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
-.panel-icon {
-    width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center; font-size: 20px;
-    background: rgba(139, 92, 246, .22); border: 1px solid rgba(139, 92, 246, .5);
-}
-.panel-icon.cyan { background: rgba(34, 211, 238, .16); border-color: rgba(34, 211, 238, .5); }
-.panel-title { font-family: 'Sora', sans-serif; font-size: 19px; font-weight: 600; color: #FFFFFF; line-height: 1.2; }
-.panel-hint { color: var(--muted); font-size: 13px; margin: 0 0 10px 0; }
+/* ---------- sidebar pieces ---------- */
+.conn { display: flex; align-items: center; gap: 8px; font-size: 14px; margin: 2px 0 10px 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--alert); }
+.split { display: flex; height: 8px; border-radius: 999px; overflow: hidden; background: var(--line); margin-top: 4px; }
+.split-eeg { background: var(--teal); }
+.split-mri { background: #5B8DB8; }
+.split-legend { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
 
-.status {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 16px 18px;
-    transition: transform .2s, border-color .2s;
-}
-.status:hover { transform: translateY(-2px); border-color: rgba(34, 211, 238, .42); }
-.status-label { color: var(--muted); font-size: 13px; font-weight: 600; }
-.status-value { font-family: 'Sora', sans-serif; font-size: 20px; font-weight: 600; margin-top: 4px; }
-.tone-ok { color: var(--ok); }
-.tone-bad { color: var(--alert); }
-.tone-idle { color: var(--faint); }
-.tone-info { color: #FFFFFF; }
+/* ---------- panels ---------- */
+.panel-title { font-size: 17px; font-weight: 600; color: var(--ink); margin: 0 0 2px 0; }
+.panel-hint { color: var(--muted); font-size: 13.5px; margin: 0 0 10px 0; }
+
+.status { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; }
+.status-label { color: var(--muted); font-size: 13px; }
+.status-value { font-size: 17px; font-weight: 600; margin-top: 2px; }
+.tone-ok { color: var(--ok); } .tone-bad { color: var(--alert); }
+.tone-idle { color: var(--faint); } .tone-info { color: var(--ink); }
 
 .stat-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 12px 0; }
-.stat {
-    flex: 1 1 110px;
-    background: rgba(255, 255, 255, .05);
-    border: 1px solid var(--line);
-    border-radius: 12px; padding: 10px 14px;
-}
-.stat-label { color: var(--muted); font-size: 12px; }
-.stat-value { font-family: 'Sora', sans-serif; color: #FFFFFF; font-size: 18px; font-weight: 600; margin-top: 2px; }
+.stat { flex: 1 1 110px; background: #F7F9FB; border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px; }
+.stat-label { color: var(--muted); font-size: 12.5px; }
+.stat-value { color: var(--ink); font-size: 17px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
 
 .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px 0; }
-.chip {
-    background: rgba(34, 211, 238, .10); border: 1px solid rgba(34, 211, 238, .32);
-    color: #B6F3FF; border-radius: 999px; padding: 4px 12px; font-size: 12px;
-}
+.chip { background: var(--teal-soft); border: 1px solid #BFE0DD; color: var(--teal-dark); border-radius: 999px; padding: 3px 12px; font-size: 12.5px; }
 
 /* ---------- signal viewer ---------- */
 .viewer svg { width: 100%; height: auto; display: block; }
-.viewer .grid { stroke: rgba(150, 160, 255, .16); stroke-width: 1; }
-.viewer .axis { fill: var(--muted); font-size: 12px; font-family: 'Plus Jakarta Sans', sans-serif; }
-.viewer .trace { stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; filter: drop-shadow(0 0 4px rgba(34,211,238,.55)); }
-.viewer .trace-smooth { stroke: #C4B5FD; stroke-width: 2.6; stroke-dasharray: 7 5; fill: none; stroke-linecap: round; }
-.viewer .hit { fill: rgba(34, 211, 238, 0); cursor: crosshair; }
-.viewer .hit:hover { fill: rgba(34, 211, 238, .95); stroke: #FFFFFF; stroke-width: 2; }
+.viewer .grid { stroke: #E3EAF0; stroke-width: 1; }
+.viewer .axis { fill: var(--muted); font-size: 12px; font-family: 'IBM Plex Sans', sans-serif; }
+.viewer .trace { stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; fill: none; stroke: var(--teal); }
+.viewer .trace-smooth { stroke: #1D4ED8; stroke-width: 2.4; stroke-dasharray: 7 5; fill: none; stroke-linecap: round; }
+.viewer .hit { fill: rgba(11, 122, 117, 0); cursor: crosshair; }
+.viewer .hit:hover { fill: var(--teal); stroke: #FFFFFF; stroke-width: 2; }
 .legend { display: flex; gap: 18px; color: var(--muted); font-size: 13px; margin: 2px 0 6px 0; }
 .legend i { display: inline-block; width: 22px; height: 3px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
 
 /* ---------- results ---------- */
-.score-panel {
-    background: linear-gradient(160deg, rgba(31, 36, 105, .85), rgba(14, 20, 56, .85));
-    border: 1px solid rgba(139, 92, 246, .38);
-    border-radius: 24px;
-    padding: 26px 22px 22px 22px;
-    text-align: center;
-    box-shadow: 0 18px 46px rgba(30, 20, 100, .45);
+.report { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 24px; }
+.report-label { color: var(--muted); font-size: 13.5px; }
+.report-score { font-size: 54px; font-weight: 700; line-height: 1.05; margin: 2px 0 8px 0; font-variant-numeric: tabular-nums; }
+.badge { display: inline-block; padding: 5px 14px; border-radius: 999px; font-weight: 600; font-size: 14px; }
+.scale { position: relative; display: flex; height: 12px; border-radius: 999px; overflow: visible; margin: 26px 0 6px 0; }
+.scale .seg { height: 100%; }
+.scale .seg.low { width: 40%; background: #BFE3D0; border-radius: 999px 0 0 999px; }
+.scale .seg.mod { width: 30%; background: #F3D9A0; }
+.scale .seg.high { width: 30%; background: #EDB4B4; border-radius: 0 999px 999px 0; }
+.scale .marker {
+    position: absolute; top: -7px; width: 4px; height: 26px; border-radius: 2px;
+    background: var(--ink); transform: translateX(-2px);
 }
-.score-panel svg { width: 100%; max-width: 360px; height: auto; }
-.gauge-num { font-family: 'Sora', sans-serif; font-size: 34px; font-weight: 700; }
-.gauge-cap { fill: var(--muted); font-size: 12px; font-family: 'Plus Jakarta Sans', sans-serif; }
-.badge { display: inline-block; padding: 7px 18px; border-radius: 999px; font-weight: 700; font-size: 15px; margin-top: 4px; }
-.band-scale { display: flex; justify-content: space-between; color: var(--faint); font-size: 12px; margin: 14px 10px 0 10px; }
-.band-note {
-    background: rgba(255, 255, 255, .05); border: 1px solid var(--line);
-    border-radius: 14px; padding: 14px 16px; margin-top: 16px;
-    color: var(--text); font-size: 14px; line-height: 1.6; text-align: left;
-}
-.band-note small { display: block; color: var(--muted); margin-top: 6px; }
+.scale-ticks { position: relative; height: 16px; font-size: 12px; color: var(--faint); }
+.scale-ticks span { position: absolute; transform: translateX(-50%); }
+.band-note { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; color: var(--ink); font-size: 14.5px; line-height: 1.65; }
+.band-note small { display: block; color: var(--muted); margin-top: 8px; font-size: 13px; }
 
-.bar-row { margin: 12px 0; }
-.bar-head { display: flex; justify-content: space-between; font-size: 14px; color: var(--text); margin-bottom: 6px; }
+.bar-row { margin: 11px 0; }
+.bar-head { display: flex; justify-content: space-between; font-size: 14px; color: var(--ink); margin-bottom: 5px; }
 .bar-head span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
-.bar-track { height: 10px; border-radius: 999px; background: rgba(255, 255, 255, .08); overflow: hidden; }
-.bar-fill {
-    height: 100%; border-radius: 999px;
-    background: linear-gradient(90deg, #6366F1, #22D3EE);
-    transform-origin: left; animation: ns-grow .8s ease-out;
-    transition: filter .2s;
-}
-.bar-fill.top { background: linear-gradient(90deg, #A78BFA, #F472B6); box-shadow: 0 0 14px rgba(167, 139, 250, .55); }
-.bar-row:hover .bar-fill { filter: brightness(1.2); }
-@keyframes ns-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.bar-track { height: 8px; border-radius: 999px; background: #E6ECF1; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; background: #8FB9C7; }
+.bar-fill.top { background: var(--teal); }
 
-.big-value { font-family: 'Sora', sans-serif; font-size: 32px; font-weight: 700; color: #FFFFFF; margin: 4px 0 2px 0; }
-.big-label { color: var(--muted); font-size: 13px; }
+.big-value { font-size: 30px; font-weight: 700; color: var(--ink); margin: 2px 0 4px 0; }
+.big-label { color: var(--muted); font-size: 13.5px; }
 
 .rawjson {
-    background: #070B24; border: 1px solid var(--line); border-radius: 12px;
-    color: #C9D3FF; padding: 14px 16px; font-size: 12.5px; line-height: 1.5;
-    overflow-x: auto; max-height: 340px;
+    background: #F7F9FB; border: 1px solid var(--line); border-radius: 8px; color: var(--ink);
+    padding: 12px 14px; font-size: 12.5px; line-height: 1.5; overflow-x: auto; max-height: 320px;
 }
 
 /* ---------- info tabs ---------- */
-.glass {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: var(--radius); padding: 22px;
-    height: 100%;
-    transition: transform .2s, border-color .2s;
-}
-.glass:hover { transform: translateY(-2px); border-color: rgba(34, 211, 238, .42); }
-.glass h4 { margin: 0 0 8px 0; font-size: 18px; }
-.glass p, .glass li { color: var(--muted); font-size: 14.5px; line-height: 1.7; }
-.glass ul { margin: 0; padding-left: 18px; }
+.info { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; height: 100%; }
+.info h4 { margin: 0 0 8px 0; font-size: 16.5px; }
+.info p, .info li { color: var(--muted); font-size: 14.5px; line-height: 1.7; }
+.info ul { margin: 0; padding-left: 18px; }
 .step-no {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 32px; height: 32px; border-radius: 50%;
-    background: var(--grad); color: #FFFFFF; font-weight: 700; margin-bottom: 10px;
+    display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+    border-radius: 50%; background: var(--teal); color: #FFFFFF; font-weight: 600; font-size: 14px; margin-bottom: 8px;
 }
-.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 4px 0; }
-.flow span {
-    background: rgba(255, 255, 255, .06); border: 1px solid var(--line);
-    color: var(--text); border-radius: 12px; padding: 8px 14px; font-size: 14px;
-}
-.flow em { color: var(--cyan); font-style: normal; }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 6px 0 2px 0; }
+.flow span { background: #F7F9FB; border: 1px solid var(--line); color: var(--ink); border-radius: 8px; padding: 7px 12px; font-size: 14px; }
+.flow em { color: var(--teal); font-style: normal; }
 
-.footer { color: var(--faint); text-align: center; font-size: 12.5px; padding: 28px 0 6px 0; }
+.footer { color: var(--faint); text-align: center; font-size: 12.5px; padding: 26px 0 6px 0; }
 
-/* ---------- responsive and accessibility ---------- */
-@media (max-width: 820px) {
-    .hero { padding: 28px 22px 70px 22px; }
-    .hero-inner { flex-direction: column; align-items: flex-start; }
-    .hero-title { font-size: 31px; }
-    .hero-brain { width: 190px; align-self: center; }
-}
-@media (prefers-reduced-motion: reduce) {
-    .pulse, .hero-brain .node, .bar-fill { animation: none; }
-    .hero-wave path { animation: none; stroke-dashoffset: 0; }
-}
+@media (max-width: 820px) { .report-score { font-size: 44px; } }
+@media (prefers-reduced-motion: reduce) { .boot-ecg, .boot-bar span { animation: none; stroke-dashoffset: 0; } }
 </style>
 """
 st.markdown(THEME_CSS, unsafe_allow_html=True)
@@ -467,7 +301,7 @@ def md(markup: str):
 
 
 def json_pre(obj):
-    """Show JSON in a dark, readable block (no dependency on the Streamlit theme)."""
+    """Show JSON in a readable block."""
     text = html.escape(json.dumps(obj, indent=2, ensure_ascii=False))
     st.markdown(f'<pre class="rawjson">{text}</pre>', unsafe_allow_html=True)
 
@@ -490,10 +324,10 @@ def parse_eeg(raw: bytes):
 def risk_level(probability: float):
     """Return (label, text colour, badge background)."""
     if probability >= 0.70:
-        return "High", "#FB7185", "rgba(251,113,133,.16)"
+        return "High", "#B83B3B", "#FBE7E7"
     if probability >= 0.40:
-        return "Moderate", "#FBBF24", "rgba(251,191,36,.16)"
-    return "Low", "#34D399", "rgba(52,211,153,.16)"
+        return "Moderate", "#B26A00", "#FDF1DC"
+    return "Low", "#2E7D5B", "#E4F3EB"
 
 
 BAND_NOTES = {
@@ -512,14 +346,17 @@ BAND_NOTES = {
     ),
 }
 
+HEART_ICON = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" '
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<path d="M2 12h4l2.5-6 4 12 2.5-6H22"/></svg>'
+)
 
-def panel_head(icon: str, title: str, hint: str, cyan: bool = False):
+
+def panel_head(title: str, hint: str):
     md(
         f"""
-        <div class="panel-head">
-            <div class="panel-icon{' cyan' if cyan else ''}">{icon}</div>
-            <div class="panel-title">{html.escape(title)}</div>
-        </div>
+        <div class="panel-title">{html.escape(title)}</div>
         <div class="panel-hint">{html.escape(hint)}</div>
         """
     )
@@ -557,101 +394,77 @@ def prob_bar(label: str, probability: float, highlight: bool = False):
     )
 
 
-# ---------- decorative illustration (not data) ----------
-def network_svg() -> str:
-    """Subtle neural-network pattern for the hero background."""
-    nodes = [
-        (70 + i * 66 + 16 * math.sin(i * 1.9), 50 + (i * 97) % 210 + 14 * math.cos(i * 2.4))
-        for i in range(15)
-    ]
-    parts = []
-    for i, (x1, y1) in enumerate(nodes):
-        for j in range(i + 1, min(i + 5, len(nodes))):
-            x2, y2 = nodes[j]
-            if math.hypot(x2 - x1, y2 - y1) < 190:
-                parts.append(
-                    f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" '
-                    'stroke="#8FB8FF" stroke-width="1"/>'
-                )
-    for x, y in nodes:
-        parts.append(f'<circle cx="{x:.0f}" cy="{y:.0f}" r="3.2" fill="#7DD3FC"/>')
-    return (
-        '<svg class="hero-net" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid slice" '
-        'aria-hidden="true">' + "".join(parts) + "</svg>"
-    )
-
-
-def wave_svg() -> str:
-    """Decorative EEG-style waveform along the bottom of the hero."""
-    width, height, steps = 1000, 56, 240
+# =====================================================================
+# LOADING SCREEN (runs once per session, checks the backend for real)
+# =====================================================================
+def _ecg_path(width=460, height=90, beats=3) -> str:
+    """One ECG-style trace made of repeated P-QRS-T beats."""
     mid = height / 2
-    points = []
-    for i in range(steps + 1):
-        x = width * i / steps
-        t = i / steps * math.pi * 14
-        y = mid + 8 * math.sin(t) + 5 * math.sin(t * 2.7 + 1)
-        if i % 60 == 30:
-            y = mid - 22
-        elif i % 60 == 31:
-            y = mid + 16
-        points.append(f"{x:.1f} {y:.1f}")
-    path = "M" + " L".join(points)
+    beat_w = width / beats
+    pts = [f"0 {mid}"]
+    for b in range(beats):
+        x0 = b * beat_w
+        shape = [
+            (0.10, 0), (0.16, -6), (0.22, 0),            # P wave
+            (0.34, 0), (0.38, 8), (0.44, -38), (0.50, 30), (0.55, 0),  # QRS
+            (0.68, 0), (0.76, -12), (0.84, 0), (1.00, 0),  # T wave
+        ]
+        for frac, dy in shape:
+            pts.append(f"{x0 + frac * beat_w:.1f} {mid + dy:.1f}")
+    return "M" + " L".join(pts)
+
+
+def boot_html(message: str, note: str = "") -> str:
     return (
-        f'<svg class="hero-wave" viewBox="0 0 {width} {height}" preserveAspectRatio="none" '
-        'aria-hidden="true"><defs>'
-        '<linearGradient id="ns-wave-g" x1="0" y1="0" x2="1" y2="0">'
-        '<stop offset="0" stop-color="#A78BFA"/><stop offset="1" stop-color="#22D3EE"/>'
-        "</linearGradient></defs>"
-        f'<path d="{path}" pathLength="1" fill="none" stroke="url(#ns-wave-g)" '
-        'stroke-width="2.2" vector-effect="non-scaling-stroke"/></svg>'
+        '<div class="boot" role="status" aria-live="polite">'
+        '<svg viewBox="0 0 460 90" aria-hidden="true">'
+        '<path d="M0 45 H460" stroke="#D8E1E8" stroke-width="1.5" fill="none"/>'
+        f'<path class="boot-ecg" d="{_ecg_path()}" pathLength="1" fill="none" '
+        'stroke="#0B7A75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>'
+        "</svg>"
+        '<div class="boot-title">NeuroSense</div>'
+        f'<div class="boot-msg">{html.escape(message)}</div>'
+        '<div class="boot-bar"><span></span></div>'
+        f'<div class="boot-note">{html.escape(note)}</div>'
+        "</div>"
     )
 
 
-BRAIN_SVG = """
-<svg class="hero-brain" viewBox="0 0 320 270" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-<defs>
-<linearGradient id="ns-brain-g" x1="0" y1="0" x2="1" y2="1">
-<stop offset="0" stop-color="#C4B5FD"/><stop offset="1" stop-color="#22D3EE"/>
-</linearGradient>
-<radialGradient id="ns-brain-halo" cx="50%" cy="50%" r="50%">
-<stop offset="0" stop-color="#7C3AED" stop-opacity=".55"/>
-<stop offset="1" stop-color="#7C3AED" stop-opacity="0"/>
-</radialGradient>
-<filter id="ns-brain-glow" x="-30%" y="-30%" width="160%" height="160%">
-<feGaussianBlur stdDeviation="3.5" result="b"/>
-<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-</filter>
-</defs>
-<circle cx="160" cy="130" r="135" fill="url(#ns-brain-halo)"/>
-<g filter="url(#ns-brain-glow)" fill="rgba(124,58,237,.16)" stroke="url(#ns-brain-g)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
-<path d="M158 38 C122 28 72 42 52 88 C36 124 46 164 78 188 C98 206 130 214 158 206 Z"/>
-<path d="M162 38 C198 28 248 42 268 88 C284 124 274 164 242 188 C222 206 190 214 162 206 Z"/>
-<path d="M146 206 C146 226 152 238 160 244 C168 238 174 226 174 206" fill="none"/>
-</g>
-<g fill="none" stroke="url(#ns-brain-g)" stroke-width="2.2" stroke-linecap="round" opacity=".92" filter="url(#ns-brain-glow)">
-<path d="M150 62 C128 56 102 64 90 84"/>
-<path d="M146 96 C120 90 92 102 84 124"/>
-<path d="M150 132 C126 128 100 140 98 164"/>
-<path d="M120 70 C112 92 118 108 134 118"/>
-<path d="M70 112 C80 104 92 108 96 118"/>
-<path d="M118 150 C112 166 120 180 138 188"/>
-<path d="M170 62 C192 56 218 64 230 84"/>
-<path d="M174 96 C200 90 228 102 236 124"/>
-<path d="M170 132 C194 128 220 140 222 164"/>
-<path d="M200 70 C208 92 202 108 186 118"/>
-<path d="M250 112 C240 104 228 108 224 118"/>
-<path d="M202 150 C208 166 200 180 182 188"/>
-</g>
-<g fill="#22D3EE" filter="url(#ns-brain-glow)">
-<circle class="node" cx="90" cy="84" r="3.6"/><circle class="node" cx="84" cy="124" r="3.6"/>
-<circle class="node" cx="98" cy="164" r="3.6"/><circle class="node" cx="134" cy="118" r="3.6"/>
-<circle class="node" cx="138" cy="188" r="3.6"/><circle class="node" cx="230" cy="84" r="3.6"/>
-<circle class="node" cx="236" cy="124" r="3.6"/><circle class="node" cx="222" cy="164" r="3.6"/>
-<circle class="node" cx="186" cy="118" r="3.6"/><circle class="node" cx="182" cy="188" r="3.6"/>
-<circle class="node" cx="150" cy="62" r="3.6"/><circle class="node" cx="170" cy="62" r="3.6"/>
-</g>
-</svg>
-"""
+def run_boot_screen():
+    """Show the loading screen while we wake up and ping the backend."""
+    slot = st.empty()
+    slot.markdown(
+        boot_html("Starting the analysis workspace", "Research prototype - not for clinical use"),
+        unsafe_allow_html=True,
+    )
+    started = time.time()
+    backend_ok = False
+    for _ in range(4):  # free hosts can take a few seconds to wake up
+        try:
+            reply = requests.get(f"{DEFAULT_API.rstrip('/')}/health", timeout=4)
+            reply.raise_for_status()
+            backend_ok = True
+            break
+        except requests.RequestException:
+            time.sleep(1.5)
+    if time.time() - started < 2.0:  # avoid a flash on fast connections
+        time.sleep(2.0 - (time.time() - started))
+
+    slot.markdown(
+        boot_html(
+            "Analysis server connected" if backend_ok else "Analysis server not reachable yet",
+            "You can change the server address in the sidebar.",
+        ),
+        unsafe_allow_html=True,
+    )
+    time.sleep(0.7)
+    slot.empty()
+    st.session_state["booted"] = True
+    st.session_state["backend_ok"] = backend_ok
+
+
+if not st.session_state.get("booted"):
+    run_boot_screen()
 
 
 # ---------- interactive EEG viewer (inline SVG built from the uploaded values) ----------
@@ -675,11 +488,9 @@ def signal_svg(values, start, end, smoothed=None) -> str:
 
     parts = [
         "<defs>"
-        f'<linearGradient id="ns-sig-stroke" gradientUnits="userSpaceOnUse" x1="{pl}" y1="0" x2="{W - pr}" y2="0">'
-        '<stop offset="0" stop-color="#A78BFA"/><stop offset="1" stop-color="#22D3EE"/></linearGradient>'
         '<linearGradient id="ns-sig-fill" x1="0" y1="0" x2="0" y2="1">'
-        '<stop offset="0" stop-color="#22D3EE" stop-opacity=".28"/>'
-        '<stop offset="1" stop-color="#22D3EE" stop-opacity="0"/></linearGradient></defs>'
+        '<stop offset="0" stop-color="#0B7A75" stop-opacity=".14"/>'
+        '<stop offset="1" stop-color="#0B7A75" stop-opacity="0"/></linearGradient></defs>'
     ]
 
     for k in range(5):
@@ -709,7 +520,7 @@ def signal_svg(values, start, end, smoothed=None) -> str:
     parts.append(
         f'<polygon points="{px(0):.1f},{H - pb} {line_pts} {px(n - 1):.1f},{H - pb}" fill="url(#ns-sig-fill)"/>'
     )
-    parts.append(f'<polyline points="{line_pts}" class="trace" fill="none" stroke="url(#ns-sig-stroke)"/>')
+    parts.append(f'<polyline points="{line_pts}" class="trace"/>')
 
     if smoothed is not None:
         sm = smoothed[start : end + 1]
@@ -731,41 +542,24 @@ def signal_svg(values, start, end, smoothed=None) -> str:
 
 
 # ---------- results ----------
-def gauge_svg(percent: float, color: str) -> str:
-    radius = 90
-    length = math.pi * radius
-    filled = length * percent / 100
-    return (
-        f'<svg viewBox="0 0 220 135" role="img" aria-label="Screening score {percent:.1f} percent">'
-        '<defs><linearGradient id="ns-gauge-g" x1="0" y1="0" x2="1" y2="0">'
-        '<stop offset="0" stop-color="#22D3EE"/><stop offset=".55" stop-color="#8B5CF6"/>'
-        '<stop offset="1" stop-color="#F472B6"/></linearGradient>'
-        '<filter id="ns-gauge-glow" x="-20%" y="-20%" width="140%" height="140%">'
-        '<feGaussianBlur stdDeviation="3" result="b"/>'
-        '<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>'
-        '<path d="M 20 110 A 90 90 0 0 1 200 110" fill="none" stroke="rgba(160,170,255,.16)" '
-        'stroke-width="16" stroke-linecap="round"/>'
-        '<path d="M 20 110 A 90 90 0 0 1 200 110" fill="none" stroke="url(#ns-gauge-g)" '
-        f'stroke-width="16" stroke-linecap="round" stroke-dasharray="{filled:.2f} {length:.2f}" '
-        'filter="url(#ns-gauge-glow)"/>'
-        f'<text x="110" y="98" text-anchor="middle" class="gauge-num" fill="{color}">{percent:.1f}%</text>'
-        '<text x="110" y="124" text-anchor="middle" class="gauge-cap">Combined screening score</text>'
-        "</svg>"
-    )
-
-
 def show_risk(probability: float):
     level, color, background = risk_level(probability)
     percent = min(max(float(probability) * 100, 0), 100)
 
     md(
         f"""
-        <div class="score-panel">
-            {gauge_svg(percent, color)}
-            <div><span class="badge" style="background:{background}; color:{color}">
-                ● {level} range
-            </span></div>
-            <div class="band-scale"><span>Low</span><span>Moderate</span><span>High</span></div>
+        <div class="report">
+            <div class="report-label">Combined screening score</div>
+            <div class="report-score" style="color:{color}">{percent:.1f}%</div>
+            <span class="badge" style="background:{background}; color:{color}">{level} range</span>
+            <div class="scale" role="img" aria-label="Score {percent:.1f} percent on a scale from low to high">
+                <div class="seg low"></div><div class="seg mod"></div><div class="seg high"></div>
+                <div class="marker" style="left:{percent:.1f}%"></div>
+            </div>
+            <div class="scale-ticks">
+                <span style="left:0%">0</span><span style="left:40%">40</span>
+                <span style="left:70%">70</span><span style="left:100%">100</span>
+            </div>
             <div class="band-note">
                 {BAND_NOTES[level]}
                 <small>
@@ -777,7 +571,7 @@ def show_risk(probability: float):
         """
     )
     st.caption(
-        "Ranges are display bands (below 40%, 40–70%, 70% and above), not clinical "
+        "Ranges are display bands (below 40%, 40-70%, 70% and above), not clinical "
         "thresholds. This score reflects the configured model output and is not a "
         "validated estimate of clinical risk."
     )
@@ -786,7 +580,7 @@ def show_risk(probability: float):
 def show_eeg_result(eeg_result: dict):
     probability = float(eeg_result["probability"])
     with st.container(border=True):
-        panel_head("〰️", "EEG model", "Signal analysis")
+        panel_head("EEG model", "Signal analysis")
         md(
             f"""
             <div class="big-label">EEG anomaly probability</div>
@@ -812,7 +606,7 @@ def show_mri_result(mri_result: dict):
     cleaned.sort(key=lambda item: item[1], reverse=True)
 
     with st.container(border=True):
-        panel_head("🧠", "MRI model", "Image classification", cyan=True)
+        panel_head("MRI model", "Image classification")
         bars = "".join(
             prob_bar(name, value, highlight=(i == 0))
             for i, (name, value) in enumerate(cleaned)
@@ -840,7 +634,7 @@ def show_results(result: dict):
             md(
                 f"""
                 <div class="chip-row">
-                    <span class="chip">Combined analysis · EEG {fused_alpha:.0%} / MRI {1 - fused_alpha:.0%}</span>
+                    <span class="chip">Combined analysis: EEG {fused_alpha:.0%} / MRI {1 - fused_alpha:.0%}</span>
                 </div>
                 """
             )
@@ -864,29 +658,24 @@ def show_results(result: dict):
 # SIDEBAR
 # =====================================================================
 with st.sidebar:
-    md(
-        """
-        <div class="brand">
-            <div class="brand-mark">🧠</div>
-            <div>
-                <div class="brand-name">NeuroSense</div>
-                <div class="brand-sub">AI brain analytics</div>
-            </div>
-        </div>
-        """
-    )
-    st.divider()
+    st.markdown("### Analysis server")
+    backend_ok = st.session_state.get("backend_ok")
+    if backend_ok is True:
+        md('<div class="conn"><span class="dot ok"></span>Connected</div>')
+    elif backend_ok is False:
+        md('<div class="conn"><span class="dot bad"></span>Not reachable</div>')
 
-    st.markdown("### Backend")
     api_url = st.text_input("FastAPI backend URL", DEFAULT_API).rstrip("/")
 
-    if st.button("Check backend connection", use_container_width=True):
+    if st.button("Check connection", use_container_width=True):
         try:
             response = requests.get(f"{api_url}/health", timeout=5)
             response.raise_for_status()
+            st.session_state["backend_ok"] = True
             st.success("Backend is responding")
             json_pre(response.json())
         except requests.RequestException as exc:
+            st.session_state["backend_ok"] = False
             st.error(f"Backend unavailable: {exc}")
         except ValueError:
             st.error("Backend returned invalid JSON.")
@@ -918,44 +707,34 @@ with st.sidebar:
 
 
 # =====================================================================
-# HERO + DISCLAIMER (always visible)
+# HEADER + DISCLAIMER (always visible)
 # =====================================================================
 md(
     f"""
-    <div class="hero">
-        {network_svg()}
-        <div class="hero-inner">
-            <div class="hero-copy">
-                <div class="hero-chip"><span class="pulse"></span>Research prototype</div>
-                <div class="hero-title">Explore EEG and MRI screening signals in one place</div>
-                <div class="hero-sub">
-                    NeuroSense runs experimental machine-learning models on EEG
-                    recordings and MRI images, then presents each output clearly.
-                    It is a research tool, not a medical device.
-                </div>
-                <div class="hero-tags">
-                    <span>〰️ EEG · {EEG_LEN} values</span>
-                    <span>🧠 MRI · JPG or PNG</span>
-                    <span>⚡ FastAPI inference</span>
-                </div>
+    <div class="topbar">
+        <div class="brand">
+            <div class="brand-mark">{HEART_ICON}</div>
+            <div>
+                <div class="brand-name">NeuroSense</div>
+                <div class="brand-sub">EEG and MRI analysis workspace</div>
             </div>
-            {BRAIN_SVG}
         </div>
-        {wave_svg()}
+        <div class="pill">Research prototype</div>
     </div>
+    <p class="intro">
+        Upload an EEG recording, an MRI image, or both. NeuroSense runs experimental
+        machine-learning models and shows each output with its limits.
+    </p>
     """
 )
 
 md(
     """
     <div class="disclaimer">
-        <div class="disclaimer-icon">⚕️</div>
-        <div>
-            <b>Medical disclaimer.</b> NeuroSense is an experimental research
-            prototype. Its outputs are not clinical diagnoses and must not be
-            used to diagnose, rule out or treat any medical condition. Always
-            consult a qualified healthcare professional.
-        </div>
+        <b>Medical disclaimer.</b> NeuroSense is an experimental research
+        prototype. Its outputs are not clinical diagnoses and must not be
+        used to diagnose, rule out or treat any medical condition. Always
+        consult a qualified healthcare professional.
     </div>
     """
 )
@@ -964,14 +743,14 @@ md(
 # NAVIGATION
 # =====================================================================
 tab_analyze, tab_how, tab_safety = st.tabs(
-    ["🔬 Analyze", "🧭 How it works", "⚕️ Safety and limits"]
+    ["Analysis", "How it works", "Safety and limits"]
 )
 
 # ---------------------------------------------------------------------
-# ANALYZE
+# ANALYSIS
 # ---------------------------------------------------------------------
 with tab_analyze:
-    st.markdown("## Upload your data")
+    st.markdown("## Upload patient data")
     st.caption("Upload one modality, or provide both for a combined analysis.")
 
     col_eeg, col_mri = st.columns(2, gap="large")
@@ -988,9 +767,8 @@ with tab_analyze:
     with col_eeg:
         with st.container(border=True):
             panel_head(
-                "〰️",
                 "EEG recording",
-                f"Upload a CSV or TXT file containing exactly {EEG_LEN} numeric values.",
+                f"CSV or TXT file with exactly {EEG_LEN} numeric values.",
             )
             eeg_file = st.file_uploader(
                 "Choose EEG file",
@@ -1010,16 +788,14 @@ with tab_analyze:
                     eeg_values = None
                     eeg_state = ("Needs attention", "bad")
                 else:
-                    st.success(f"✓ {len(eeg_values)} numeric values loaded")
+                    st.success(f"{len(eeg_values)} numeric values loaded")
                     eeg_state = ("Ready", "ok")
 
     with col_mri:
         with st.container(border=True):
             panel_head(
-                "🧠",
                 "MRI scan",
-                "Upload a supported JPG or PNG brain image for model inference.",
-                cyan=True,
+                "JPG or PNG brain image for model inference.",
             )
             mri_file = st.file_uploader(
                 "Choose MRI image",
@@ -1054,7 +830,6 @@ with tab_analyze:
         st.write("")
         with st.container(border=True):
             panel_head(
-                "📈",
                 "Signal viewer",
                 "Zoom into a range of samples and hover over the line to read exact values.",
             )
@@ -1103,10 +878,10 @@ with tab_analyze:
                 ]
             )
 
-            legend = '<span><i style="background:linear-gradient(90deg,#A78BFA,#22D3EE)"></i>Raw signal</span>'
+            legend = '<span><i style="background:#0B7A75"></i>Raw signal</span>'
             if show_smooth:
                 legend += (
-                    f'<span><i style="background:#C4B5FD"></i>Moving average ({smooth_window})</span>'
+                    f'<span><i style="background:#1D4ED8"></i>Moving average ({smooth_window})</span>'
                 )
             md(
                 f"""
@@ -1143,7 +918,7 @@ with tab_analyze:
     # ---------- analysis ----------
     st.write("")
     run = st.button(
-        "✨  Run AI analysis",
+        "Run analysis",
         type="primary",
         use_container_width=True,
         disabled=(mode is None or not eeg_ok),
@@ -1168,7 +943,7 @@ with tab_analyze:
             )
 
         try:
-            with st.spinner("🧠 Processing your uploaded data..."):
+            with st.spinner("Analysing your uploaded data..."):
                 response = requests.post(
                     f"{api_url}/predict",
                     files=files,
@@ -1191,7 +966,7 @@ with tab_analyze:
         except requests.RequestException as exc:
             st.error(
                 f"Could not reach the backend at {api_url}. "
-                f"Details: {exc}"
+                f"Check the address in the sidebar. Details: {exc}"
             )
 
     # ---------- results ----------
@@ -1216,7 +991,7 @@ with tab_how:
     with s1:
         md(
             f"""
-            <div class="glass">
+            <div class="info">
                 <div class="step-no">1</div>
                 <h4>Upload</h4>
                 <p>Add an EEG file with exactly {EEG_LEN} numeric values, an MRI image
@@ -1227,9 +1002,9 @@ with tab_how:
     with s2:
         md(
             """
-            <div class="glass">
+            <div class="info">
                 <div class="step-no">2</div>
-                <h4>Analyze</h4>
+                <h4>Analyse</h4>
                 <p>Your files are sent to the FastAPI backend set in the sidebar.
                 The models run there and return their outputs.</p>
             </div>
@@ -1238,7 +1013,7 @@ with tab_how:
     with s3:
         md(
             """
-            <div class="glass">
+            <div class="info">
                 <div class="step-no">3</div>
                 <h4>Review</h4>
                 <p>See each model's output. When both inputs are supplied, a combined
@@ -1252,7 +1027,7 @@ with tab_how:
     with i1:
         md(
             f"""
-            <div class="glass">
+            <div class="info">
                 <h4>Accepted inputs</h4>
                 <ul>
                     <li><b>EEG:</b> CSV or TXT, {EEG_LEN} numbers separated by commas,
@@ -1266,7 +1041,7 @@ with tab_how:
     with i2:
         md(
             """
-            <div class="glass">
+            <div class="info">
                 <h4>What you get back</h4>
                 <ul>
                     <li><b>EEG model:</b> an anomaly probability.</li>
@@ -1281,7 +1056,7 @@ with tab_how:
     st.write("")
     md(
         """
-        <div class="glass">
+        <div class="info">
             <h4>Data flow</h4>
             <div class="flow">
                 <span>Your browser</span><em>→</em>
@@ -1305,7 +1080,7 @@ with tab_safety:
     with a1:
         md(
             """
-            <div class="glass">
+            <div class="info">
                 <h4>What this is</h4>
                 <ul>
                     <li>An experimental research prototype for exploring model outputs.</li>
@@ -1317,7 +1092,7 @@ with tab_safety:
     with a2:
         md(
             """
-            <div class="glass">
+            <div class="info">
                 <h4>What this is not</h4>
                 <ul>
                     <li>Not a medical device and not a diagnostic tool.</li>
@@ -1333,7 +1108,7 @@ with tab_safety:
     with b1:
         md(
             """
-            <div class="glass">
+            <div class="info">
                 <h4>Your data</h4>
                 <ul>
                     <li>Uploaded files are sent only to the backend URL set in the sidebar.</li>
@@ -1345,7 +1120,7 @@ with tab_safety:
     with b2:
         md(
             """
-            <div class="glass">
+            <div class="info">
                 <h4>When to seek care</h4>
                 <ul>
                     <li>Sudden severe headache, weakness on one side, confusion, trouble
@@ -1362,7 +1137,7 @@ with tab_safety:
 md(
     """
     <div class="footer">
-        NeuroSense · AI-assisted neurological research prototype · Not for clinical use<br>
+        NeuroSense - AI-assisted neurological research prototype - Not for clinical use<br>
         Built with Streamlit, FastAPI and machine learning
     </div>
     """
